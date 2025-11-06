@@ -1,0 +1,8 @@
+[
+    {"id":"experience","label":"What is your current trading experience?","options":["Beginner","Intermediate","Advanced"]},
+    {"id":"goal","label":"What is your main goal in trading?","options":["Consistency","High returns","Learning technical skills"]},
+    {"id":"style","label":"Which trading style do you prefer?","options":["Scalping","Swing Trading","Long-term Investing"]},
+    {"id":"risk","label":"How do you describe your risk appetite?","options":["Low","Moderate","High"]},
+    {"id":"time","label":"How much time can you dedicate daily to trading?","options":["<1 hour","1–3 hours","Full-time"]}
+  ]
+  

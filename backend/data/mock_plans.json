@@ -1,0 +1,21 @@
+{
+    "plan_id": "mock-plan-001",
+    "stages": [
+      {
+        "title": "Stage 1: Foundation",
+        "content": "Learn trading basics, risk control and mindset.",
+        "locked": false
+      },
+      {
+        "title": "Stage 2: Execution",
+        "content": "Daily routines, entries and exits, checklists.",
+        "locked": true
+      },
+      {
+        "title": "Stage 3: Optimization",
+        "content": "Automation, scaling strategies, edge refinement.",
+        "locked": true
+      }
+    ]
+  }
+  

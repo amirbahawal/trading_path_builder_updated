@@ -1,6 +1,5 @@
 from pydantic import BaseModel, Field, field_validator
 
-
 class QuizInput(BaseModel):
     experience: str = Field(..., min_length=1)
     years: str = Field(..., min_length=1)
@@ -23,4 +22,3 @@ class QuizInput(BaseModel):
 
     class Config:
         extra = "forbid"
-
