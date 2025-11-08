@@ -195,6 +195,14 @@ app.include_router(checkout.router, prefix="/checkout", tags=["Checkout"])
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(analytics_router, tags=["Analytics"])
 
+# Include WebSocket router
+try:
+    from routers import websocket
+    app.include_router(websocket.router, tags=["WebSocket"])
+    logger.info("WebSocket router loaded")
+except Exception as e:
+    logger.warning(f"Could not load WebSocket router: {e}")
+
 # Add debug router only in development
 if settings.ENV == "development":
     try:

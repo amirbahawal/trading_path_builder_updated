@@ -9,6 +9,8 @@
 export const API_CONFIG = {
   // Base URL for API requests
   // Priority: REACT_APP_API_URL > VITE_BACKEND_URL > default
+  // NOTE: WebSocket URLs are automatically derived from this base URL
+  // (http://127.0.0.1:8000 becomes ws://127.0.0.1:8000/ws)
   BASE_URL:
     process.env.REACT_APP_API_URL ||
     process.env.VITE_BACKEND_URL ||

@@ -12,6 +12,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { usePlan } from "../hooks/usePlan";
+import { usePlanUnlockWebSocket } from "../hooks/useWebSocket";
 import { logEvent } from "../api/analytics";
 import { Lock, CheckCircle, Target, Zap, BookOpen } from 'lucide-react';
 import { renderMarkdown } from "../utils/markdownRenderer";
@@ -285,6 +286,21 @@ const SplitScreenLayout = ({ isPro, onUnlock, stages }) => {
 function PlanViewComponent({ planId, onUnlock, registerPlanRefresh }) {
   const { plan, loading, error, refreshPlan, clearPlan } = usePlan(planId);
   const isPro = plan?.tier === "pro";
+  
+  // WebSocket connection for real-time unlock updates
+  // This listens for unlock events from the backend
+  const handleUnlockUpdate = useCallback((data) => {
+    console.log("[PlanView] Received unlock update via WebSocket:", data);
+    // Refresh plan when unlock event is received
+    if (data.plan_id === planId) {
+      refreshPlan().catch(() => {
+        // Silently handle refresh errors
+      });
+    }
+  }, [planId, refreshPlan]);
+  
+  // Connect to WebSocket for real-time updates (only if planId exists)
+  usePlanUnlockWebSocket(planId, handleUnlockUpdate);
   
   // Force refresh on mount if coming from unlock (check localStorage)
   useEffect(() => {

@@ -74,6 +74,14 @@ async def create_checkout_session(request: CheckoutRequest):
         # Emit analytics event for tier upgrade
         emit_event(AnalyticsEvents.TIER_UPGRADED_TO_PRO, user_identifier, request.plan_id)
         
+        # Broadcast WebSocket event for real-time update
+        try:
+            from routers.websocket import broadcast_plan_unlock
+            await broadcast_plan_unlock(request.plan_id, user_identifier)
+        except Exception as ws_error:
+            # WebSocket broadcast failure should not break the unlock flow
+            logger.warning(f"[CHECKOUT] Failed to broadcast WebSocket event: {ws_error}")
+        
         logger.info(f"[AUDIT] ✅ Plan unlocked successfully | user_id={user_identifier} plan_id={request.plan_id} tier=pro")
         
         return CheckoutResponse(
@@ -104,6 +112,14 @@ async def complete_checkout(request: CheckoutCompleteRequest):
         
         # Emit analytics event for tier upgrade
         emit_event(AnalyticsEvents.TIER_UPGRADED_TO_PRO, request.user_id, request.plan_id)
+        
+        # Broadcast WebSocket event for real-time update
+        try:
+            from routers.websocket import broadcast_plan_unlock
+            await broadcast_plan_unlock(request.plan_id, request.user_id)
+        except Exception as ws_error:
+            # WebSocket broadcast failure should not break the unlock flow
+            logger.warning(f"[CHECKOUT] Failed to broadcast WebSocket event: {ws_error}")
         
         logger.info(f"[AUDIT] Plan unlocked | user_id={request.user_id} plan_id={request.plan_id}")
         
