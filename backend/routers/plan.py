@@ -113,13 +113,20 @@ async def generate_summary(request: SummaryRequest, current_user: dict = Depends
                 logger.error(f"[AUDIT] Stage 1 content is empty after generation | user_id={user_id}")
                 raise HTTPException(status_code=500, detail="Failed to generate summary - Stage 1 content is empty")
             
-            # Generate a plan_id for the summary
-            from services.plan_generator import _short_guid
-            plan_id = f"plan-{_short_guid()}"
+            # Generate a deterministic plan_id from fingerprint (same answers = same plan_id)
+            import uuid as uuid_lib
+            import hashlib
+            # Create deterministic UUID from fingerprint
+            hash_obj = hashlib.md5(fingerprint.encode())
+            hash_hex = hash_obj.hexdigest()
+            # Convert to UUID format (32 hex chars -> UUID)
+            plan_uuid = uuid_lib.UUID(hex=hash_hex)
+            plan_id = f"plan-{plan_uuid}"
             
             # Save Stage 1 to database (so we have a plan_id, but stages 2 & 3 will be generated later)
             from core.db_helpers import save_plan_to_db
             plan_data = {
+                "plan_id": plan_uuid,  # Pass UUID directly
                 "user_id": user_id,
                 "answers_json": request.answers,
                 "answers_fingerprint": fingerprint,
@@ -138,8 +145,10 @@ async def generate_summary(request: SummaryRequest, current_user: dict = Depends
             }
             
             try:
-                save_plan_to_db(plan_data)
-                logger.info(f"[AUDIT] Saved Stage 1 plan to database | plan_id={plan_id}")
+                saved_plan_id = save_plan_to_db(plan_data)
+                logger.info(f"[AUDIT] Saved Stage 1 plan to database | plan_id={saved_plan_id} (requested: {plan_id})")
+                # Use the saved plan_id (should match, but use what's actually in DB)
+                plan_id = f"plan-{saved_plan_id}" if not saved_plan_id.startswith("plan-") else saved_plan_id
             except Exception as db_error:
                 logger.warning(f"[AUDIT] Failed to save plan to database (non-critical): {db_error}")
                 # Continue anyway - plan_id is still valid
@@ -227,6 +236,20 @@ async def get_plan(plan_id: str, current_user: dict = Depends(get_current_user_o
         # Ensure we always return all 3 stages, even if some are missing from DB
         # This prevents stages 2 and 3 from not showing up
         expected_stages = [1, 2, 3]
+        
+        # If user is pro and stages 2/3 are missing content, try to generate them
+        if tier == "pro":
+            stages_dict = {s.get("stage_number"): s for s in stages_data}
+            stage2_data = stages_dict.get(2, {})
+            stage3_data = stages_dict.get(3, {})
+            stage2_has_content = bool(stage2_data.get("content_md", "").strip())
+            stage3_has_content = bool(stage3_data.get("content_md", "").strip())
+            
+            # If stages 2 or 3 are missing content for pro user, generate them
+            if not stage2_has_content or not stage3_has_content:
+                logger.warning(f"[GET_PLAN] Pro user but stages 2/3 missing content. Stage 2: {stage2_has_content}, Stage 3: {stage3_has_content}. This should have been generated on unlock!")
+                # Note: We don't generate here to avoid blocking the request, but we log it
+        
         for stage_id in expected_stages:
             stage_data = next((s for s in stages_data if s.get("stage_number") == stage_id), None)
             
@@ -268,8 +291,11 @@ async def get_plan(plan_id: str, current_user: dict = Depends(get_current_user_o
             # Only pro users should receive full content
             stage_content = ""
             if not is_locked:
-                # Pro users get full content
-                stage_content = stage_data.get("content_md", "")
+                # Pro users get full content - check both content_md and content fields
+                stage_content = stage_data.get("content_md", "") or stage_data.get("content", "")
+                # Log warning if content is still empty for unlocked stages (this is a problem)
+                if not stage_content and stage_id in [2, 3]:
+                    logger.warning(f"[GET_PLAN] ⚠️ Stage {stage_id} is unlocked (tier={tier}) but has NO content! plan_id={plan_id}. This should not happen - content should be generated on unlock.")
             # Free users only get teaser (content is empty for locked stages)
             
             stage = Stage(

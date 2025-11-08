@@ -32,22 +32,81 @@ def save_plan_to_db(plan_data: dict) -> str:
                 # If it's not a valid UUID string, leave it as None
                 user_id_value = None
         
-        # Create Plan record
-        plan = Plan(
-            id=uuid.uuid4(),
-            user_id=user_id_value,
-            answers_json=plan_data.get("answers_json", {}),
-            answers_fingerprint=plan_data.get("answers_fingerprint", ""),
-            template_version=plan_data.get("template_version", ""),
-            persona_label=plan_data.get("persona_label"),
-            overview_md=plan_data.get("overview_md", ""),
-            created_at=datetime.utcnow()
-        )
-        db.add(plan)
-        db.commit()
-        db.refresh(plan)
+        # Use provided plan_id if it exists, otherwise generate new one
+        plan_id_value = plan_data.get("plan_id")
+        plan_uuid = None
         
-        plan_id = str(plan.id)
+        if plan_id_value:
+            # Try to convert plan_id to UUID
+            clean_plan_id = plan_id_value
+            if isinstance(plan_id_value, str) and plan_id_value.startswith("plan-"):
+                clean_plan_id = plan_id_value[5:]  # Remove "plan-" prefix
+            
+            try:
+                plan_uuid = uuid.UUID(clean_plan_id)
+                # Check if plan already exists
+                existing_plan = db.query(Plan).filter(Plan.id == plan_uuid).first()
+                if existing_plan:
+                    # Plan exists - update it instead of creating new one
+                    existing_plan.answers_json = plan_data.get("answers_json", existing_plan.answers_json)
+                    existing_plan.answers_fingerprint = plan_data.get("answers_fingerprint", existing_plan.answers_fingerprint)
+                    existing_plan.template_version = plan_data.get("template_version", existing_plan.template_version)
+                    existing_plan.persona_label = plan_data.get("persona_label", existing_plan.persona_label)
+                    existing_plan.overview_md = plan_data.get("overview_md", existing_plan.overview_md)
+                    db.commit()
+                    db.refresh(existing_plan)
+                    plan = existing_plan
+                    plan_id = str(plan.id)
+                else:
+                    # Plan doesn't exist - create with specified UUID
+                    plan = Plan(
+                        id=plan_uuid,
+                        user_id=user_id_value,
+                        answers_json=plan_data.get("answers_json", {}),
+                        answers_fingerprint=plan_data.get("answers_fingerprint", ""),
+                        template_version=plan_data.get("template_version", ""),
+                        persona_label=plan_data.get("persona_label"),
+                        overview_md=plan_data.get("overview_md", ""),
+                        created_at=datetime.utcnow()
+                    )
+                    db.add(plan)
+                    db.commit()
+                    db.refresh(plan)
+                    plan_id = str(plan.id)
+            except ValueError:
+                # Invalid UUID format - generate new one
+                plan_uuid = uuid.uuid4()
+                plan = Plan(
+                    id=plan_uuid,
+                    user_id=user_id_value,
+                    answers_json=plan_data.get("answers_json", {}),
+                    answers_fingerprint=plan_data.get("answers_fingerprint", ""),
+                    template_version=plan_data.get("template_version", ""),
+                    persona_label=plan_data.get("persona_label"),
+                    overview_md=plan_data.get("overview_md", ""),
+                    created_at=datetime.utcnow()
+                )
+                db.add(plan)
+                db.commit()
+                db.refresh(plan)
+                plan_id = str(plan.id)
+        else:
+            # No plan_id provided - generate new one
+            plan_uuid = uuid.uuid4()
+            plan = Plan(
+                id=plan_uuid,
+                user_id=user_id_value,
+                answers_json=plan_data.get("answers_json", {}),
+                answers_fingerprint=plan_data.get("answers_fingerprint", ""),
+                template_version=plan_data.get("template_version", ""),
+                persona_label=plan_data.get("persona_label"),
+                overview_md=plan_data.get("overview_md", ""),
+                created_at=datetime.utcnow()
+            )
+            db.add(plan)
+            db.commit()
+            db.refresh(plan)
+            plan_id = str(plan.id)
         
         # Create Stage records
         for stage_data in plan_data.get("stages", []):

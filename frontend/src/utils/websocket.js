@@ -115,23 +115,40 @@ export class WebSocketClient {
       };
 
       this.ws.onerror = (error) => {
-        console.error("[WebSocket] Error:", error);
+        // Don't log as error - WebSocket is optional and failures are non-critical
+        console.warn("[WebSocket] Connection error (non-critical):", error);
         this.isConnecting = false;
         this.emit("error", error);
       };
 
       this.ws.onclose = (event) => {
-        console.log("[WebSocket] Connection closed", event.code, event.reason);
+        // Don't log as error - WebSocket is optional
+        // Only log non-normal closures
+        if (event.code !== 1000 && event.code !== 1001) { // 1000 = normal closure, 1001 = going away
+          // Only log first few connection failures to avoid console spam
+          if (this.reconnectAttempts < 2) {
+            console.warn(`[WebSocket] Connection closed (code: ${event.code}) - WebSocket is optional, content will still load`);
+          }
+        }
         this.isConnecting = false;
         this.emit("close", event);
 
         // Attempt to reconnect if not intentionally closed
+        // But limit retries and reduce logging to avoid spam
         if (this.shouldReconnect && this.reconnectAttempts < this.options.maxReconnectAttempts) {
           this.reconnectAttempts++;
-          console.log(`[WebSocket] Attempting to reconnect (${this.reconnectAttempts}/${this.options.maxReconnectAttempts})...`);
-          setTimeout(() => this.connect(), this.options.reconnectInterval);
+          // Only log first attempt to reduce console noise
+          if (this.reconnectAttempts === 1) {
+            console.log(`[WebSocket] Attempting to reconnect... (WebSocket is optional)`);
+          }
+          setTimeout(() => {
+            if (this.shouldReconnect && !this.isConnecting) {
+              this.connect();
+            }
+          }, this.options.reconnectInterval);
         } else if (this.reconnectAttempts >= this.options.maxReconnectAttempts) {
-          console.error("[WebSocket] Max reconnection attempts reached");
+          // Silent failure - WebSocket is optional and non-critical
+          // Don't log as error since it's expected if backend WebSocket isn't available
           this.emit("maxReconnectAttemptsReached");
         }
       };

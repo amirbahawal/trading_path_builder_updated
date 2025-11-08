@@ -111,7 +111,7 @@ const Summary = React.memo(({ answers, onComplete, onUnlock: _onUnlock, register
         let errorMessage = "Failed to create plan. Please try again.";
         
         if (err.isTimeout) {
-          errorMessage = err.message || "Request timed out. AI generation can take 30-90 seconds. Please check if the backend server is running and try again.";
+          errorMessage = err.message || "Request timed out. Please check if the backend server is running and try again.";
         } else if (err.isNetworkError) {
           errorMessage = "Cannot connect to server. Please check if the backend server is running.";
         } else if (err.message) {
@@ -176,8 +176,13 @@ const Summary = React.memo(({ answers, onComplete, onUnlock: _onUnlock, register
     });
     
     // Instant unlock - no email required, no modal, no auth check
+    // Prevent multiple clicks
+    if (unlocking) {
+      return;
+    }
+    
     setUnlocking(true);
-    setUnlockProgress("Initializing unlock...");
+    setUnlockProgress("Processing...");
     setShowSuccess(false);
     
     try {
@@ -188,52 +193,75 @@ const Summary = React.memo(({ answers, onComplete, onUnlock: _onUnlock, register
       localStorage.setItem("current_plan_id", effectivePlanId);
       
       // Step 1: Processing payment
-      setUnlockProgress("Processing unlock...");
-      await new Promise(resolve => setTimeout(resolve, 300));
+      setUnlockProgress("Unlocking plan...");
+      await new Promise(resolve => setTimeout(resolve, 500));
       
       const result = await startCheckout(effectivePlanId, "", userIdentifier);
       
       if (result && result.success) {
-        // Step 2: Unlock successful
-        setUnlockProgress("Unlock successful!");
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // Step 2: Generating content for all stages (do this in background)
+        setUnlockProgress("Preparing your plan...");
         
-        // Step 3: Updating your plan
-        setUnlockProgress("Updating your plan...");
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Refresh plan to get updated tier and content (stages 2 & 3 unlocked with content)
+        // Wait a moment for backend to process
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // Refresh plan to get updated tier (stages 2 & 3 unlocked)
-        // Wait a moment for database to be ready
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // Refresh plan multiple times if needed (sometimes needs a moment)
+        // Refresh plan multiple times to get all stage content (with timeout)
         let refreshedPlan = null;
-        for (let i = 0; i < 3; i++) {
-          refreshedPlan = await refreshPlan();
-          
-          if (refreshedPlan && refreshedPlan.tier === "pro") {
+        const maxAttempts = 3;
+        for (let i = 0; i < maxAttempts; i++) {
+          try {
+            refreshedPlan = await refreshPlan();
+            
+            // Check if we have content for stages 2 and 3
+            const stages = refreshedPlan?.stages || [];
+            const stage2 = stages.find(s => s.id === 2 || s.stage_number === 2);
+            const stage3 = stages.find(s => s.id === 3 || s.stage_number === 3);
+            const hasStage2Content = stage2?.content || stage2?.content_md;
+            const hasStage3Content = stage3?.content || stage3?.content_md;
+            
+            if (refreshedPlan && refreshedPlan.tier === "pro" && hasStage2Content && hasStage3Content) {
+              break;
+            }
+            
+            if (i < maxAttempts - 1) {
+              setUnlockProgress(`Loading content... (${i + 1}/${maxAttempts})`);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          } catch (refreshError) {
+            console.warn("Plan refresh error (non-critical):", refreshError);
+            // Continue even if refresh fails - content will load later
             break;
-          }
-          
-          if (i < 2) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
           }
         }
         
-        // Step 4: Success animation
-        setUnlockProgress("All set! Redirecting...");
+        // Step 3: Show success state briefly, then navigate
+        setUnlockProgress("Complete!");
         setShowSuccess(true);
-        setToast({ type: 'success', message: '🎉 Plan unlocked successfully! All stages are now available.', duration: 3000 });
+        setToast({ type: 'success', message: '🎉 Plan unlocked successfully!', duration: 1500 });
         
         // Mark that we just unlocked, so plan view can force refresh
         localStorage.setItem("just_unlocked", "true");
         
-        // Navigate to plan view after success animation
-        setTimeout(() => {
-          if (onComplete) {
-            onComplete(effectivePlanId);
-          }
-        }, 1500);
+        // Wait for success animation to show
+        await new Promise(resolve => setTimeout(resolve, 600));
+        
+        // Clean up all states BEFORE navigation to prevent UI jumps
+        // Use a small delay to ensure React has processed state updates
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        setShowSuccess(false);
+        setUnlockProgress("");
+        
+        // Wait for overlay to fade out before navigating
+        await new Promise(resolve => setTimeout(resolve, 150));
+        
+        setUnlocking(false); // Reset unlocking state
+        
+        // Navigate - overlay should now be completely hidden
+        if (onComplete) {
+          onComplete(effectivePlanId);
+        }
       } else {
         throw new Error(result?.message || "Unlock failed - no success response");
       }
@@ -245,12 +273,7 @@ const Summary = React.memo(({ answers, onComplete, onUnlock: _onUnlock, register
       setToast({ type: 'error', message: `Unlock failed: ${errorMsg}. Please try again.`, duration: 5000 });
       setUnlockProgress("");
       setShowSuccess(false);
-    } finally {
-      // Reset unlocking state after a delay to allow animations
-      setTimeout(() => {
-        setUnlocking(false);
-        setUnlockProgress("");
-      }, 2000);
+      setUnlocking(false);
     }
   };
 
@@ -274,7 +297,7 @@ const Summary = React.memo(({ answers, onComplete, onUnlock: _onUnlock, register
               <h1>Creating Your Trading Path</h1>
               <p>Analyzing your responses and building your personalized plan...</p>
               <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginTop: '8px' }}>
-                This may take 30-90 seconds. Please wait...
+                Please wait while we create your personalized plan...
               </p>
             </div>
             <div className="card-main" style={{ minHeight: '300px', position: 'relative' }}>
@@ -349,34 +372,134 @@ const Summary = React.memo(({ answers, onComplete, onUnlock: _onUnlock, register
         </div>
       )}
 
-      {/* Success Confetti Effect */}
+      {/* Success Confetti Effect - Subtle animation */}
       {showSuccess && (
         <div 
           style={{
             position: 'fixed',
             inset: 0,
             pointerEvents: 'none',
-            zIndex: 9999,
-            overflow: 'hidden'
+            zIndex: 9998,
+            overflow: 'hidden',
+            opacity: 1,
+            transition: 'opacity 0.3s ease-out'
           }}
         >
-          {[...Array(50)].map((_, i) => (
+          {[...Array(30)].map((_, i) => (
             <div
               key={i}
               style={{
                 position: 'absolute',
-                width: '8px',
-                height: '8px',
+                width: '6px',
+                height: '6px',
                 background: ['#4CAF50', '#2196F3', '#FF9800', '#9C27B0', '#F44336'][i % 5],
                 left: `${Math.random() * 100}%`,
-                top: `${-10 + Math.random() * 20}%`,
+                top: `${-5 + Math.random() * 15}%`,
                 borderRadius: '50%',
-                animation: `confettiFall ${2 + Math.random() * 2}s linear forwards`,
-                animationDelay: `${Math.random() * 0.5}s`,
-                opacity: 0.9
+                animation: `confettiFall ${1.5 + Math.random() * 1}s ease-out forwards`,
+                animationDelay: `${Math.random() * 0.3}s`,
+                opacity: 0.7
               }}
             />
           ))}
+        </div>
+      )}
+      
+      {/* Unlocking Overlay - Smooth overlay instead of popup */}
+      {(unlocking || showSuccess) && (
+        <div 
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.5)',
+            backdropFilter: 'blur(4px)',
+            zIndex: 9997,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'opacity 0.2s ease-in-out',
+            opacity: (unlocking || showSuccess) ? 1 : 0,
+            pointerEvents: (unlocking || showSuccess) ? 'auto' : 'none',
+            animation: 'fadeIn 0.2s ease-in'
+          }}
+        >
+          <div style={{
+            background: 'rgba(17, 24, 39, 0.95)',
+            backdropFilter: 'blur(10px)',
+            border: '1px solid rgba(167, 139, 250, 0.3)',
+            borderRadius: '20px',
+            padding: '32px 40px',
+            maxWidth: '400px',
+            width: '90%',
+            textAlign: 'center',
+            boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+            animation: 'slideIn 0.3s ease-out'
+          }}>
+            {!showSuccess ? (
+              <>
+                <div style={{
+                  width: '48px',
+                  height: '48px',
+                  border: '4px solid rgba(167, 139, 250, 0.2)',
+                  borderTop: '4px solid #a78bfa',
+                  borderRadius: '50%',
+                  animation: 'spin 0.8s linear infinite',
+                  margin: '0 auto 20px'
+                }}></div>
+                <p style={{
+                  color: '#e5e7eb',
+                  fontSize: '1.1rem',
+                  fontWeight: '600',
+                  margin: '0 0 8px',
+                  lineHeight: '1.5'
+                }}>
+                  {unlockProgress || "Unlocking..."}
+                </p>
+                <p style={{
+                  color: '#9ca3af',
+                  fontSize: '0.9rem',
+                  margin: 0,
+                  lineHeight: '1.5'
+                }}>
+                  Please wait a moment...
+                </p>
+              </>
+            ) : (
+              <>
+                <div style={{
+                  width: '64px',
+                  height: '64px',
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, #10b981, #059669)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  margin: '0 auto 20px',
+                  animation: 'scaleIn 0.4s ease-out',
+                  fontSize: '2rem'
+                }}>
+                  ✓
+                </div>
+                <p style={{
+                  color: '#10b981',
+                  fontSize: '1.2rem',
+                  fontWeight: '700',
+                  margin: '0 0 8px',
+                  lineHeight: '1.5'
+                }}>
+                  Plan Unlocked!
+                </p>
+                <p style={{
+                  color: '#9ca3af',
+                  fontSize: '0.95rem',
+                  margin: 0,
+                  lineHeight: '1.5'
+                }}>
+                  Redirecting to your plan...
+                </p>
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -581,7 +704,9 @@ const Summary = React.memo(({ answers, onComplete, onUnlock: _onUnlock, register
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    handleUnlockClick();
+                    if (!unlocking && !loading) {
+                      handleUnlockClick();
+                    }
                   }}
                   disabled={unlocking || loading}
                   title={loading ? "Plan is being generated..." : !planId ? "Click to try unlock (will check localStorage)" : "Unlock all stages for $5"}
@@ -589,62 +714,23 @@ const Summary = React.memo(({ answers, onComplete, onUnlock: _onUnlock, register
                     width: '100%',
                     fontSize: '1.05rem',
                     padding: '16px 32px',
-                    cursor: (unlocking || loading) ? 'wait' : 'pointer',
+                    cursor: (unlocking || loading) ? 'not-allowed' : 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     gap: '12px',
                     visibility: 'visible',
-                    opacity: (unlocking || loading) ? 0.9 : 1,
-                    position: 'relative',
-                    zIndex: 1000,
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                    transform: (unlocking || loading) ? 'scale(0.98)' : 'scale(1)',
-                    filter: (unlocking || loading) ? 'brightness(0.95)' : 'brightness(1)',
-                    overflow: 'hidden'
-                  }}
-                >
-                  {unlocking && (
-                    <>
-                      {/* Animated Spinner */}
-                      <div style={{
-                        width: '20px',
-                        height: '20px',
-                        border: '3px solid rgba(255, 255, 255, 0.2)',
-                        borderTop: '3px solid #ffffff',
-                        borderRight: '3px solid rgba(255, 255, 255, 0.8)',
-                        borderRadius: '50%',
-                        animation: 'spin 0.7s cubic-bezier(0.5, 0, 0.5, 1) infinite',
-                        flexShrink: 0,
-                        boxShadow: '0 0 10px rgba(255, 255, 255, 0.3)'
-                      }}></div>
-                      {/* Pulsing Background Effect */}
-                      <div style={{
-                        position: 'absolute',
-                        inset: 0,
-                        background: 'linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent)',
-                        animation: 'shimmer 2s infinite',
-                        pointerEvents: 'none'
-                      }}></div>
-                    </>
-                  )}
-                  {showSuccess && (
-                    <span style={{
-                      fontSize: '1.2rem',
-                      animation: 'bounce 0.5s ease-in-out'
-                    }}>🎉</span>
-                  )}
-                  <span style={{
+                    opacity: (unlocking || loading) ? 0.6 : 1,
                     position: 'relative',
                     zIndex: 1,
-                    transition: 'opacity 0.3s ease',
-                    opacity: unlocking ? 0.95 : 1
-                  }}>
-                    {showSuccess 
-                      ? "Unlocked! Redirecting..." 
-                      : unlocking 
-                        ? (unlockProgress || "Unlocking Your Plan...") 
-                        : "View Full Plan & Unlock for $5 →"}
+                    transition: 'opacity 0.2s ease',
+                    pointerEvents: (unlocking || loading) ? 'none' : 'auto'
+                  }}
+                >
+                  <span>
+                    {unlocking 
+                      ? "Processing..." 
+                      : "View Full Plan & Unlock for $5 →"}
                   </span>
                 </button>
                 <p className="summary-disclaimer" style={{ marginTop: '12px', textAlign: 'center' }}>

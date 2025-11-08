@@ -10,7 +10,7 @@
  * @param {Function} registerPlanRefresh - Callback to register plan refresh function
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { usePlan } from "../hooks/usePlan";
 import { usePlanUnlockWebSocket } from "../hooks/useWebSocket";
 import { logEvent } from "../api/analytics";
@@ -43,29 +43,34 @@ const SplitScreenLayout = ({ isPro, onUnlock, stages }) => {
     teaser: null
   };
   
-  const stage2 = stages?.find(s => s.id === 2) || {
+  // Find stage 2 from backend response, or create fallback
+  const foundStage2 = stages?.find(s => s.id === 2 || s.stage_number === 2);
+  const stage2 = foundStage2 ? {
+    ...foundStage2,
+    // Ensure content field exists (might be content_md from backend)
+    content: foundStage2.content || foundStage2.content_md || ""
+  } : {
     id: 2,
     title: "Insights and Routine",
     locked: !isPro, // Fallback to isPro if stage not found
     content: "",
     teaser: null
   };
-  // Override with actual locked status from backend
-  if (stages?.find(s => s.id === 2)) {
-    stage2.locked = stages.find(s => s.id === 2).locked;
-  }
   
-  const stage3 = stages?.find(s => s.id === 3) || {
+  // Find stage 3 from backend response, or create fallback
+  const foundStage3 = stages?.find(s => s.id === 3 || s.stage_number === 3);
+  const stage3 = foundStage3 ? {
+    ...foundStage3,
+    // Ensure content field exists (might be content_md from backend)
+    content: foundStage3.content || foundStage3.content_md || ""
+  } : {
     id: 3,
     title: "Frameworks and Playbooks",
     locked: !isPro, // Fallback to isPro if stage not found
     content: "",
     teaser: null
   };
-  // Override with actual locked status from backend
-  if (stages?.find(s => s.id === 3)) {
-    stage3.locked = stages.find(s => s.id === 3).locked;
-  }
+  
 
   // Stage colors and icons
   const stageConfig = [
@@ -203,12 +208,18 @@ const SplitScreenLayout = ({ isPro, onUnlock, stages }) => {
             </div>
           )}
 
-          {/* Unlocked Content */}
-          {!stage2.locked && stage2.content && (
+          {/* Unlocked Content - Show content if unlocked */}
+          {!stage2.locked && (
             <div className="mt-4">
-              <div className="text-gray-300 text-base leading-relaxed">
-                {renderMarkdown(stage2.content)}
-              </div>
+              {stage2.content && stage2.content.trim() ? (
+                <div className="text-gray-300 text-base leading-relaxed">
+                  {renderMarkdown(stage2.content)}
+                </div>
+              ) : (
+                <div className="text-gray-400 text-sm py-2">
+                  Loading content...
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -269,12 +280,18 @@ const SplitScreenLayout = ({ isPro, onUnlock, stages }) => {
             </div>
           )}
 
-          {/* Unlocked Content */}
-          {!stage3.locked && stage3.content && (
+          {/* Unlocked Content - Show content if unlocked */}
+          {!stage3.locked && (
             <div className="mt-4">
-              <div className="text-gray-300 text-base leading-relaxed">
-                {renderMarkdown(stage3.content)}
-              </div>
+              {stage3.content && stage3.content.trim() ? (
+                <div className="text-gray-300 text-base leading-relaxed">
+                  {renderMarkdown(stage3.content)}
+                </div>
+              ) : (
+                <div className="text-gray-400 text-sm py-2">
+                  Loading content...
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -287,12 +304,13 @@ function PlanViewComponent({ planId, onUnlock, registerPlanRefresh }) {
   const { plan, loading, error, refreshPlan, clearPlan } = usePlan(planId);
   const isPro = plan?.tier === "pro";
   
-  // WebSocket connection for real-time unlock updates
+  // WebSocket connection for real-time unlock updates (optional, non-blocking)
   // This listens for unlock events from the backend
+  // Note: WebSocket failures won't prevent stages from displaying
   const handleUnlockUpdate = useCallback((data) => {
     console.log("[PlanView] Received unlock update via WebSocket:", data);
     // Refresh plan when unlock event is received
-    if (data.plan_id === planId) {
+    if (data && data.plan_id === planId) {
       refreshPlan().catch(() => {
         // Silently handle refresh errors
       });
@@ -300,33 +318,75 @@ function PlanViewComponent({ planId, onUnlock, registerPlanRefresh }) {
   }, [planId, refreshPlan]);
   
   // Connect to WebSocket for real-time updates (only if planId exists)
-  usePlanUnlockWebSocket(planId, handleUnlockUpdate);
+  // WebSocket errors are handled gracefully and won't block content display
+  const { error: wsError } = usePlanUnlockWebSocket(planId, handleUnlockUpdate);
   
-  // Force refresh on mount if coming from unlock (check localStorage)
+  // Log WebSocket errors but don't let them affect the UI
   useEffect(() => {
-    const shouldRefresh = localStorage.getItem("just_unlocked") === "true";
-    if (shouldRefresh && planId && !loading) {
-      // Add a small delay to ensure backend has processed the entitlement
-      setTimeout(() => {
-        refreshPlan().then((refreshedPlan) => {
-          if (refreshedPlan) {
-            localStorage.removeItem("just_unlocked");
-            
-            // If still not pro, try refreshing again after a delay
-            if (refreshedPlan.tier !== "pro") {
-              setTimeout(() => {
-                refreshPlan().catch(() => {
-                  // Silently handle retry errors
-                });
-              }, 1000);
-            }
-          }
-        }).catch(() => {
-          // Silently handle refresh errors - don't remove just_unlocked flag to allow retry
-        });
-      }, 500);
+    if (wsError) {
+      console.warn("[PlanView] WebSocket connection error (non-critical):", wsError);
     }
-  }, [planId, refreshPlan, loading]);
+  }, [wsError]);
+  
+  // Single unified refresh logic - prevent multiple refreshes
+  const hasRefreshedRef = useRef(false);
+  
+  useEffect(() => {
+    // Skip if already refreshed or still loading
+    if (hasRefreshedRef.current || loading || !planId) {
+      return;
+    }
+    
+    const shouldRefresh = localStorage.getItem("just_unlocked") === "true";
+    const isPro = plan?.tier === "pro";
+    
+    // Check if we need to refresh (coming from unlock OR missing content for pro user)
+    const needsRefresh = shouldRefresh || (isPro && plan?.stages);
+    
+    if (needsRefresh) {
+      const stages = plan?.stages || [];
+      const stage2 = stages.find(s => s.id === 2 || s.stage_number === 2);
+      const stage3 = stages.find(s => s.id === 3 || s.stage_number === 3);
+      const stage2Content = stage2?.content || stage2?.content_md || "";
+      const stage3Content = stage3?.content || stage3?.content_md || "";
+      const hasAllContent = stage2Content.trim() && stage3Content.trim();
+      
+      // Only refresh if we don't have all content yet
+      if (!hasAllContent) {
+        hasRefreshedRef.current = true;
+        
+        // Wait a moment for backend to finish generating content
+        const timer = setTimeout(() => {
+          refreshPlan().then((refreshedPlan) => {
+            if (refreshedPlan) {
+              const refreshedStages = refreshedPlan.stages || [];
+              const refreshedStage2 = refreshedStages.find(s => s.id === 2 || s.stage_number === 2);
+              const refreshedStage3 = refreshedStages.find(s => s.id === 3 || s.stage_number === 3);
+              const hasStage2Content = refreshedStage2?.content || refreshedStage2?.content_md;
+              const hasStage3Content = refreshedStage3?.content || refreshedStage3?.content_md;
+              
+              // If we have all content, clear the unlock flag
+              if (refreshedPlan.tier === "pro" && hasStage2Content && hasStage3Content) {
+                localStorage.removeItem("just_unlocked");
+              }
+            }
+            // Reset refresh flag after a delay to allow future refreshes if needed
+            setTimeout(() => {
+              hasRefreshedRef.current = false;
+            }, 5000);
+          }).catch(() => {
+            // Reset on error
+            hasRefreshedRef.current = false;
+          });
+        }, 1000); // Wait 1 second before refreshing
+        
+        return () => clearTimeout(timer);
+      } else {
+        // We have all content, clear the flag
+        localStorage.removeItem("just_unlocked");
+      }
+    }
+  }, [planId, plan, loading, refreshPlan]);
 
   useEffect(() => {
     if (registerPlanRefresh) registerPlanRefresh(refreshPlan, clearPlan);

@@ -195,13 +195,14 @@ app.include_router(checkout.router, prefix="/checkout", tags=["Checkout"])
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(analytics_router, tags=["Analytics"])
 
-# Include WebSocket router
+# Include WebSocket router (no prefix - WebSocket routes are at root level)
 try:
     from routers import websocket
-    app.include_router(websocket.router, tags=["WebSocket"])
-    logger.info("WebSocket router loaded")
+    # WebSocket router should be included without prefix since the route is already "/ws"
+    app.include_router(websocket.router)
+    logger.info("WebSocket router loaded at /ws")
 except Exception as e:
-    logger.warning(f"Could not load WebSocket router: {e}")
+    logger.error(f"Could not load WebSocket router: {e}", exc_info=True)
 
 # Add debug router only in development
 if settings.ENV == "development":

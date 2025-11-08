@@ -73,10 +73,24 @@ export function useWebSocket(_path = "/ws", options = {}, autoConnect = true) {
   }, []); // Only run once on mount
 
   // Auto-connect effect (separate from initialization)
+  // Only attempt connection if autoConnect is enabled
   useEffect(() => {
     if (autoConnectRef.current && wsClientRef.current && !isConnected && !isConnecting) {
-      setIsConnecting(true);
-      wsClientRef.current.connect();
+      // Use setTimeout to prevent blocking the main thread
+      const timeoutId = setTimeout(() => {
+        if (wsClientRef.current && !isConnected && !isConnecting) {
+          setIsConnecting(true);
+          try {
+            wsClientRef.current.connect();
+          } catch (err) {
+            console.warn("[useWebSocket] Connection attempt failed (non-critical):", err);
+            setIsConnecting(false);
+            setError(err);
+          }
+        }
+      }, 100); // Small delay to avoid blocking UI rendering
+      
+      return () => clearTimeout(timeoutId);
     }
   }, [isConnected, isConnecting]);
 
@@ -147,7 +161,16 @@ export function useWebSocket(_path = "/ws", options = {}, autoConnect = true) {
  * @returns {Object} WebSocket state
  */
 export function usePlanUnlockWebSocket(planId, onUnlockUpdate) {
-  const { isConnected, error, subscribe, sendMessage } = useWebSocket("/ws", {}, !!planId);
+  // Only enable WebSocket if planId exists
+  // WebSocket is optional - failures won't prevent content from loading
+  const { isConnected, error, subscribe, sendMessage } = useWebSocket(
+    "/ws", 
+    { 
+      maxReconnectAttempts: 3, // Reduce retries to avoid console spam
+      reconnectInterval: 5000 // Longer interval between retries
+    }, 
+    !!planId // Only auto-connect if planId exists
+  );
   const onUnlockUpdateRef = useRef(onUnlockUpdate);
 
   // Update callback ref when it changes

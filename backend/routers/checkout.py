@@ -43,6 +43,122 @@ async def create_checkout_session(request: CheckoutRequest):
         # Instant unlock - grant pro entitlement immediately
         session_id = f"unlock_{uuid.uuid4().hex[:10]}"
         
+        # Get plan data to check if stages 2 and 3 need to be generated
+        from core.db_helpers import get_plan_from_db
+        plan_data = get_plan_from_db(request.plan_id)
+        
+        # Generate missing stages (2 and 3) if they don't have content
+        if plan_data:
+            stages_data = plan_data.get("stages", [])
+            stages_dict = {s.get("stage_number"): s for s in stages_data}
+            
+            # Check if stages 2 and 3 need content generation
+            stage2_content = stages_dict.get(2, {}).get("content_md", "").strip()
+            stage3_content = stages_dict.get(3, {}).get("content_md", "").strip()
+            
+            if not stage2_content or not stage3_content:
+                logger.info(f"[CHECKOUT] Stages 2 or 3 missing content. Stage 2: {len(stage2_content)} chars, Stage 3: {len(stage3_content)} chars. Generating...")
+                
+                # Generate all stages by calling plan generation
+                try:
+                    from services.plan_generator import generate_plan_object
+                    answers = plan_data.get("answers_json", {})
+                    
+                    if not answers:
+                        logger.error(f"[CHECKOUT] Cannot generate stages - plan has no answers_json")
+                    else:
+                        logger.info(f"[CHECKOUT] Generating full plan with answers: {list(answers.keys())}")
+                        # Generate full plan with all 3 stages
+                        plan_response = generate_plan_object(user_identifier, answers)
+                        logger.info(f"[CHECKOUT] Generated plan with {len(plan_response.stages)} stages")
+                        
+                        # Update database with generated stages 2 and 3
+                        from database.connection import SessionLocal
+                        from database.models import Plan, Stage
+                        import uuid as uuid_lib
+                        
+                        db = SessionLocal()
+                        try:
+                            # Convert plan_id to UUID using the same logic as entitlement service
+                            from services.entitlement_service import _convert_plan_id_to_uuid
+                            try:
+                                plan_uuid = _convert_plan_id_to_uuid(request.plan_id)
+                                logger.info(f"[CHECKOUT] Converted plan_id '{request.plan_id}' to UUID: {plan_uuid}")
+                            except Exception as convert_error:
+                                logger.error(f"[CHECKOUT] Failed to convert plan_id to UUID: {convert_error}")
+                                plan_uuid = None
+                            
+                            # Look up plan by UUID
+                            plan = None
+                            if plan_uuid:
+                                plan = db.query(Plan).filter(Plan.id == plan_uuid).first()
+                                if plan:
+                                    logger.info(f"[CHECKOUT] Found plan in DB: {plan.id}")
+                                else:
+                                    logger.warning(f"[CHECKOUT] Plan not found with UUID: {plan_uuid}")
+                            
+                            # If still not found, try to find by fingerprint (fallback)
+                            if not plan:
+                                logger.warning(f"[CHECKOUT] Plan not found by UUID, trying to find by fingerprint...")
+                                # This is a fallback - shouldn't normally be needed
+                            
+                            if plan:
+                                logger.info(f"[CHECKOUT] Found plan in DB: {plan.id}, updating stages 2 and 3")
+                                
+                                # Delete existing stages 2 and 3 if they exist
+                                deleted_count = db.query(Stage).filter(
+                                    Stage.plan_id == plan.id,
+                                    Stage.stage_number.in_([2, 3])
+                                ).delete()
+                                logger.info(f"[CHECKOUT] Deleted {deleted_count} existing stages 2/3")
+                                
+                                # Add stages 2 and 3 with generated content
+                                stages_added = 0
+                                for i, stage_obj in enumerate(plan_response.stages):
+                                    stage_number = i + 1
+                                    # Only add stages 2 and 3 (stage 1 already exists)
+                                    if stage_number in [2, 3] and stage_obj.content and stage_obj.content.strip():
+                                        stage = Stage(
+                                            id=uuid_lib.uuid4(),
+                                            plan_id=plan.id,
+                                            stage_number=stage_number,
+                                            title=stage_obj.title,
+                                            is_free=(stage_number == 1),
+                                            content_md=stage_obj.content
+                                        )
+                                        db.add(stage)
+                                        stages_added += 1
+                                        logger.info(f"[CHECKOUT] ✅ Added stage {stage_number} with {len(stage_obj.content)} chars of content")
+                                
+                                if stages_added > 0:
+                                    db.commit()
+                                    logger.info(f"[CHECKOUT] ✅ Successfully committed {stages_added} stages to database")
+                                    
+                                    # Verify stages were saved
+                                    saved_stages = db.query(Stage).filter(
+                                        Stage.plan_id == plan.id,
+                                        Stage.stage_number.in_([2, 3])
+                                    ).all()
+                                    logger.info(f"[CHECKOUT] Verified: {len(saved_stages)} stages saved (stages 2 and 3)")
+                                    for saved_stage in saved_stages:
+                                        logger.info(f"[CHECKOUT]   - Stage {saved_stage.stage_number}: {len(saved_stage.content_md)} chars")
+                                else:
+                                    logger.error(f"[CHECKOUT] ❌ No stages were added! Generated stages: {[s.stage_number for s in plan_response.stages]}")
+                                    db.rollback()
+                            else:
+                                logger.error(f"[CHECKOUT] ❌ Plan not found in database. Tried plan_id: {request.plan_id}, clean_plan_id: {clean_plan_id}, plan_uuid: {plan_uuid}")
+                        except Exception as db_error:
+                            db.rollback()
+                            logger.error(f"[CHECKOUT] Failed to update plan stages in DB: {db_error}", exc_info=True)
+                            # Don't fail unlock - continue even if DB update fails
+                        finally:
+                            db.close()
+                except Exception as gen_error:
+                    logger.error(f"[CHECKOUT] Failed to generate missing stages: {gen_error}", exc_info=True)
+                    # Continue with unlock even if generation fails - user can still access what exists
+            else:
+                logger.info(f"[CHECKOUT] Stages 2 and 3 already have content. Stage 2: {len(stage2_content)} chars, Stage 3: {len(stage3_content)} chars")
+        
         # Grant pro entitlement immediately (works with "anon" user_id)
         logger.info(f"[CHECKOUT] Attempting to grant entitlement: user_id={user_identifier} plan_id={request.plan_id}")
         

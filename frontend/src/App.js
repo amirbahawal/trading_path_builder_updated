@@ -66,7 +66,11 @@ function AppContent() {
     if (generatedPlanId) {
       localStorage.setItem("current_plan_id", generatedPlanId);
     }
-    setStage("plan");
+    // Small delay to ensure smooth transition (overlay from summary is cleared first)
+    // This prevents the UI jump/broken screen issue
+    setTimeout(() => {
+      setStage("plan");
+    }, 100);
   };
 
   /**
