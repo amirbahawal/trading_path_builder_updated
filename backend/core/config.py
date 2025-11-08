@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     
     # Authentication
     JWT_SECRET: str = "dev_secret_change_in_production"
+    APP_AUTH_SECRET: str = "dev-secret-change-me"  # For magic link tokens
     EMAIL_SERVICE_API_KEY: str = ""
     
     # Email/Gmail

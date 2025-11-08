@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from "react";
 import "../styles/OTPModal.css";
+import { apiRequest } from "../api/client";
+import { API_ENDPOINTS, UI_CONFIG, APP_CONSTANTS } from "../constants";
 
 const OTPModal = ({ isOpen, email, onVerified, onCancel, purpose = "login" }) => {
   const [otp, setOtp] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(600); // 10 minutes
+  const [timeLeft, setTimeLeft] = useState(UI_CONFIG.OTP_EXPIRATION_SECONDS);
   const [canResend, setCanResend] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
 
@@ -53,35 +55,27 @@ const OTPModal = ({ isOpen, email, onVerified, onCancel, purpose = "login" }) =>
   };
 
   const handleVerify = async () => {
-    if (otp.length !== 6) {
-      setError("Please enter a 6-digit code");
+    if (otp.length !== APP_CONSTANTS.OTP_LENGTH) {
+      setError(`Please enter a ${APP_CONSTANTS.OTP_LENGTH}-digit code`);
       return;
     }
 
     setLoading(true);
     try {
       const endpoint =
-        purpose === "login" ? "/verify-login-code" : "/complete-unlock";
+        purpose === "login"
+          ? API_ENDPOINTS.AUTH_VERIFY_LOGIN_CODE
+          : API_ENDPOINTS.AUTH_COMPLETE_UNLOCK;
 
-      const response = await fetch(`http://127.0.0.1:8000/auth${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email,
-          code: otp,
-          plan_id: purpose === "unlock" ? localStorage.getItem("planId") : undefined,
-        }),
+      const data = await apiRequest(endpoint, "POST", {
+        email,
+        code: otp,
+        plan_id: purpose === "unlock" ? localStorage.getItem("planId") : undefined,
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
-        onVerified(data);
-      } else {
-        setError(data.detail || "Verification failed. Please try again.");
-      }
+      onVerified(data);
     } catch (err) {
-      setError("Network error. Please check your connection.");
+      setError(err.message || "Verification failed. Please try again.");
       console.error("Verification error:", err);
     } finally {
       setLoading(false);
@@ -93,27 +87,21 @@ const OTPModal = ({ isOpen, email, onVerified, onCancel, purpose = "login" }) =>
 
     setLoading(true);
     setCanResend(false);
-    setResendCooldown(60);
+    setResendCooldown(UI_CONFIG.OTP_RESEND_COOLDOWN);
 
     try {
       const endpoint =
-        purpose === "login" ? "/send-login-code" : "/unlock-plan";
+        purpose === "login"
+          ? API_ENDPOINTS.AUTH_SEND_LOGIN_CODE
+          : API_ENDPOINTS.AUTH_UNLOCK_PLAN;
 
-      const response = await fetch(`http://127.0.0.1:8000/auth${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
+      await apiRequest(endpoint, "POST", { email });
 
-      if (response.ok) {
-        setOtp("");
-        setTimeLeft(600);
-        setError("");
-      } else {
-        setError("Failed to resend code. Please try again.");
-      }
+      setOtp("");
+      setTimeLeft(UI_CONFIG.OTP_EXPIRATION_SECONDS);
+      setError("");
     } catch (err) {
-      setError("Network error. Please check your connection.");
+      setError(err.message || "Failed to resend code. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -166,7 +154,7 @@ const OTPModal = ({ isOpen, email, onVerified, onCancel, purpose = "login" }) =>
           <button
             className="otp-verify-btn"
             onClick={handleVerify}
-            disabled={loading || otp.length !== 6 || timeLeft === 0}
+            disabled={loading || otp.length !== APP_CONSTANTS.OTP_LENGTH || timeLeft === 0}
           >
             {loading ? "Verifying..." : "Verify Code"}
           </button>

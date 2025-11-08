@@ -103,9 +103,10 @@ coverage/
 .nyc_output/
 *.lcov
 
-# Package Manager Locks (keep package-lock.json for consistency)
-# Uncomment if you want to ignore package-lock.json
-# package-lock.json
+# Package Manager Locks
+# NOTE: package-lock.json SHOULD be committed for reproducible builds
+# Only ignore if you're using a different package manager
+# package-lock.json  # Keep this committed!
 # yarn.lock
 # pnpm-lock.yaml
 

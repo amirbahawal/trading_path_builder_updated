@@ -35,28 +35,60 @@ async def create_checkout_session(request: CheckoutRequest):
     """Create a checkout session - instantly grants access (no payment required)"""
     try:
         # Emit analytics event for unlock click
-        user_identifier = request.user_id or request.email or "user"
+        user_identifier = request.user_id or request.email or "anon"
+        logger.info(f"[CHECKOUT] Unlock request received: user_id={user_identifier} plan_id={request.plan_id}")
+        
         emit_event(AnalyticsEvents.UNLOCK_CLICK, user_identifier, request.plan_id)
         
         # Instant unlock - grant pro entitlement immediately
         session_id = f"unlock_{uuid.uuid4().hex[:10]}"
         
-        # Grant pro entitlement immediately
-        grant_entitlement(user_identifier, request.plan_id, "pro")
+        # Grant pro entitlement immediately (works with "anon" user_id)
+        logger.info(f"[CHECKOUT] Attempting to grant entitlement: user_id={user_identifier} plan_id={request.plan_id}")
+        
+        try:
+            entitlement_success = grant_entitlement(user_identifier, request.plan_id, "pro")
+            
+            if not entitlement_success:
+                logger.error(f"[CHECKOUT] ❌ Failed to grant entitlement: user_id={user_identifier} plan_id={request.plan_id}")
+                # Try to check what went wrong
+                from services.entitlement_service import check_entitlement
+                current_tier = check_entitlement(user_identifier, request.plan_id)
+                logger.error(f"[CHECKOUT] Current tier after failed grant: {current_tier}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Failed to grant access. Check server logs for details. user_id={user_identifier} plan_id={request.plan_id}"
+                )
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.error(f"[CHECKOUT] ❌ Exception during entitlement grant: {e}", exc_info=True)
+            import traceback
+            logger.error(f"[CHECKOUT] Traceback: {traceback.format_exc()}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to grant access: {str(e)}. Check server logs for details."
+            )
         
         # Emit analytics event for tier upgrade
         emit_event(AnalyticsEvents.TIER_UPGRADED_TO_PRO, user_identifier, request.plan_id)
         
-        logger.info(f"[AUDIT] Plan unlocked | user_id={user_identifier} plan_id={request.plan_id}")
+        logger.info(f"[AUDIT] ✅ Plan unlocked successfully | user_id={user_identifier} plan_id={request.plan_id} tier=pro")
         
         return CheckoutResponse(
             success=True,
             session_id=session_id,
             message="Plan unlocked successfully"
         )
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
-        logger.error(f"Unlock failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[CHECKOUT] ❌ Unlock failed with exception: {e}", exc_info=True)
+        import traceback
+        logger.error(f"[CHECKOUT] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Unlock failed: {str(e)}")
 
 
 @router.post("/complete")

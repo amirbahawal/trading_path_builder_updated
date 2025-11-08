@@ -1,10 +1,10 @@
 // src/api/client.js
 // PRODUCTION MODE - REAL API ONLY (NO MOCK MODE)
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000";
+import { API_CONFIG, STORAGE_KEYS, ERROR_MESSAGES } from "../constants";
 
-// Storage key for auth token
-const TOKEN_STORAGE_KEY = "trading_path_token";
+const API_BASE_URL = API_CONFIG.BASE_URL;
+const TOKEN_STORAGE_KEY = STORAGE_KEYS.AUTH_TOKEN;
 
 /**
  * Get auth token from localStorage
@@ -24,10 +24,9 @@ function getAuthToken() {
 function clearAuthData() {
   try {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
-    localStorage.removeItem("trading_path_user_id");
-    localStorage.removeItem("trading_path_email");
-    localStorage.removeItem("trading_path_expires_at");
-    console.log("Auth data cleared");
+    localStorage.removeItem(STORAGE_KEYS.USER_ID);
+    localStorage.removeItem(STORAGE_KEYS.EMAIL);
+    localStorage.removeItem(STORAGE_KEYS.EXPIRES_AT);
   } catch (error) {
     console.error("Error clearing auth data:", error);
   }
@@ -36,8 +35,13 @@ function clearAuthData() {
 /**
  * PRODUCTION API REQUEST - Real Backend Only
  * No mock mode fallback - errors are thrown and must be handled by caller
+ * 
+ * @param {string} endpoint - API endpoint path
+ * @param {string} method - HTTP method (GET, POST, etc.)
+ * @param {object} body - Request body (optional)
+ * @param {number} timeoutMs - Request timeout in milliseconds (default: 30s, plan generation: 120s)
  */
-export async function apiRequest(endpoint, method = "GET", body = null) {
+export async function apiRequest(endpoint, method = "GET", body = null, timeoutMs = null) {
   const options = {
     method,
     headers: { "Content-Type": "application/json" },
@@ -51,26 +55,56 @@ export async function apiRequest(endpoint, method = "GET", body = null) {
   
   if (body) options.body = JSON.stringify(body);
 
-  try {
-    const res = await fetch(`${API_BASE_URL}${endpoint}`, options);
-
-    // Handle 401 Unauthorized - clear auth and notify user
-    if (res.status === 401) {
-      console.error("401 Unauthorized - clearing auth data");
-      clearAuthData();
-      
-      // Dispatch custom event for auth context to pick up
-      window.dispatchEvent(new CustomEvent("auth:unauthorized"));
-      
-      throw new Error("Unauthorized - please log in again. Please refresh and try again.");
+  // Determine timeout based on endpoint
+  // Plan generation endpoints need longer timeout (120 seconds)
+  let timeout = timeoutMs;
+  if (!timeout) {
+    if (endpoint.includes('/plan/summary') || endpoint === '/plan' || endpoint.startsWith('/plan/')) {
+      timeout = 120000; // 120 seconds for plan generation
+    } else {
+      timeout = 30000; // 30 seconds for other requests
     }
+  }
 
-    // Handle other HTTP errors
+  try {
+    // Add timeout for long-running requests
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+
+    // Handle network errors (CORS, connection refused, etc.)
     if (!res.ok) {
+      // Handle 401 Unauthorized - clear auth and notify user
+      if (res.status === 401) {
+        clearAuthData();
+        window.dispatchEvent(new CustomEvent("auth:unauthorized"));
+        throw new Error("Session expired. Please log in again.");
+      }
+
+      // Handle other HTTP errors
       let errorMessage = "An error occurred";
       try {
         const errorData = await res.json();
-        errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
+        // Handle both FastAPI error formats: {detail: "..."} and {detail: {...}}
+        if (errorData.detail) {
+          if (typeof errorData.detail === 'string') {
+            errorMessage = errorData.detail;
+          } else if (errorData.detail.message) {
+            errorMessage = errorData.detail.message;
+          } else if (errorData.detail.error) {
+            errorMessage = errorData.detail.error;
+          }
+        } else if (errorData.message) {
+          errorMessage = errorData.message;
+        } else {
+          errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+        }
       } catch {
         errorMessage = `HTTP ${res.status}: ${res.statusText}`;
       }
@@ -82,10 +116,25 @@ export async function apiRequest(endpoint, method = "GET", body = null) {
 
     return await res.json();
   } catch (error) {
-    // Log error for debugging
-    console.error(`API Error [${method} ${endpoint}]:`, error.message);
+    // Handle timeout errors
+    if (error.name === 'AbortError') {
+      const timeoutSeconds = Math.round(timeout / 1000);
+      const timeoutError = new Error(`Request timed out after ${timeoutSeconds} seconds. AI generation can take time. Please check if the backend server is running and try again.`);
+      timeoutError.status = 0;
+      timeoutError.isNetworkError = true;
+      timeoutError.isTimeout = true;
+      throw timeoutError;
+    }
     
-    // Re-throw error - let caller handle it
+    // Handle network errors (CORS, fetch failures, etc.)
+    if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      const networkError = new Error("Cannot connect to server. Please check if the backend is running.");
+      networkError.status = 0;
+      networkError.isNetworkError = true;
+      throw networkError;
+    }
+    
+    // Re-throw other errors - let caller handle it
     throw error;
   }
 }
@@ -95,35 +144,35 @@ export async function apiRequest(endpoint, method = "GET", body = null) {
  * All components must handle their own errors
  */
 export function handleApiError(error) {
-  if (!error) return "An unknown error occurred";
+  if (!error) return ERROR_MESSAGES.UNKNOWN_ERROR;
   
   if (error.message.includes("fetch")) {
-    return "Connection failed. Is the server running? Backend must be running on http://127.0.0.1:8000";
+    return ERROR_MESSAGES.CONNECTION_FAILED;
   }
   
   if (error.message.includes("Unauthorized")) {
-    return "Session expired. Please log in again.";
+    return ERROR_MESSAGES.UNAUTHORIZED;
   }
   
   if (error.status === 400) {
-    return "Invalid request. Please check your input.";
+    return ERROR_MESSAGES.INVALID_REQUEST;
   }
   
   if (error.status === 403) {
-    return "Access denied. You don't have permission to access this.";
+    return ERROR_MESSAGES.ACCESS_DENIED;
   }
   
   if (error.status === 404) {
-    return "Resource not found.";
+    return ERROR_MESSAGES.NOT_FOUND;
   }
   
   if (error.status === 429) {
-    return "Too many requests. Please wait a moment and try again.";
+    return ERROR_MESSAGES.TOO_MANY_REQUESTS;
   }
   
   if (error.status === 500) {
-    return "Server error. The backend is having issues. Please try again later.";
+    return ERROR_MESSAGES.SERVER_ERROR;
   }
   
-  return error.message || "An unexpected error occurred";
+  return error.message || ERROR_MESSAGES.UNKNOWN_ERROR;
 }

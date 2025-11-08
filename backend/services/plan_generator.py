@@ -1,5 +1,6 @@
 from typing import Dict, Any, Optional, List
 import uuid
+import logging
 from models.plan_model import PlanResponse, Stage
 from utils.fingerprint import generate_fingerprint
 from core.config import settings
@@ -7,6 +8,8 @@ from prompt_builder import build_prompt
 from ai_client import get_ai_response
 from core.db_helpers import save_plan_to_db, get_cached_plan_by_fingerprint
 import re
+
+logger = logging.getLogger(__name__)
 
 
 def _short_guid():
@@ -199,7 +202,7 @@ def generate_plan_object(user_id: Optional[str], answers: Dict[str, Any]) -> Pla
     # Check for cached plan
     cached_plan = check_cached_plan(fingerprint)
     if cached_plan:
-        print(f"Retrieved from cache: plan {cached_plan.plan_id} with fingerprint {fingerprint}")
+        logger.info(f"Retrieved from cache: plan {cached_plan.plan_id} with fingerprint {fingerprint[:16]}...")
         return cached_plan
     
     # Generate new plan using AI
@@ -209,22 +212,36 @@ def generate_plan_object(user_id: Optional[str], answers: Dict[str, Any]) -> Pla
     # Generate all 3 stages
     for i in range(3):
         stage_number = i + 1
-        content_md = generate_stage_content(answers, i)
+        try:
+            content_md = generate_stage_content(answers, i)
+            # Validate content
+            if not content_md or content_md.strip() == "":
+                logger.error(f"Stage {stage_number} content is empty after generation")
+                # Use fallback content instead of failing
+                content_md = f"Stage {stage_number} content is being generated. Please try again in a moment."
+        except Exception as stage_error:
+            logger.error(f"Error generating stage {stage_number}: {stage_error}", exc_info=True)
+            # Use fallback content instead of failing - this prevents server crashes
+            content_md = f"Stage {stage_number} content generation encountered an error. Please try again."
         
         # Stage 1 is free, others are locked initially
         is_free = (i == 0)
         
-        # Determine title
+        # Determine title - Match CONTEXT.md exactly
         titles = [
-            "Stage 1: Your Trading Foundation",
-            "Stage 2: Personalized Execution Framework",
-            "Stage 3: Advanced Frameworks & Playbooks"
+            "Intro and Diagnostic",
+            "Insights and Routine",
+            "Frameworks and Playbooks"
         ]
         
         # Extract teaser for locked stages
         teaser = None
         if i > 0:  # Stages 2 and 3 are locked
-            teaser = _extract_teaser_bullets(content_md)
+            try:
+                teaser = _extract_teaser_bullets(content_md)
+            except Exception as teaser_error:
+                logger.warning(f"Error extracting teaser for stage {stage_number}: {teaser_error}")
+                teaser = []  # Empty teaser if extraction fails
         
         stage = Stage(
             id=stage_number,  # Stage ID: 1, 2, or 3
@@ -264,9 +281,9 @@ def generate_plan_object(user_id: Optional[str], answers: Dict[str, Any]) -> Pla
     # Save to database
     try:
         save_plan_to_db(plan_data)
-        print(f"Generated new plan {plan_id} with fingerprint {fingerprint}")
+        logger.info(f"Generated new plan {plan_id} with fingerprint {fingerprint[:16]}...")
     except Exception as e:
-        print(f"Error saving plan to database: {e}")
+        logger.error(f"Error saving plan to database: {e}")
         # Continue anyway
     
     return PlanResponse(plan_id=plan_id, stages=stages)

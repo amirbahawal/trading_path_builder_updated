@@ -1,7 +1,16 @@
-import React, { useState, useEffect, useRef } from "react";
+/**
+ * Header Component
+ * Application header with title, sign in button, and user menu
+ * 
+ * @component
+ * @param {Function} onSignIn - Callback when user clicks sign in
+ * @param {Function} onSignOut - Callback when user clicks sign out
+ */
+
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth } from "../contexts/AuthContext";
 
-const Header = ({ onSignIn, onSignOut }) => {
+const Header = React.memo(({ onSignIn, onSignOut }) => {
   const { isLoggedIn, email } = useAuth();
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef(null);
@@ -16,6 +25,10 @@ const Header = ({ onSignIn, onSignOut }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  const handleMenuToggle = useCallback(() => {
+    setShowMenu(prev => !prev);
+  }, []);
+
   return (
     <header className="app-header">
       <div className="header-content">
@@ -23,7 +36,7 @@ const Header = ({ onSignIn, onSignOut }) => {
         <div className="header-actions">
           {isLoggedIn ? (
             <div className="user-menu" ref={menuRef}>
-              <button onClick={() => setShowMenu(!showMenu)}>
+              <button onClick={handleMenuToggle}>
                 {email} ▾
               </button>
               {showMenu && (
@@ -39,6 +52,8 @@ const Header = ({ onSignIn, onSignOut }) => {
       </div>
     </header>
   );
-};
+});
+
+Header.displayName = 'Header';
 
 export default Header;

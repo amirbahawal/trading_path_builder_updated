@@ -1,20 +1,46 @@
-import React, { useState, useCallback, useRef } from "react";
-import Quiz from "./components/quiz";
-import Summary from "./components/summary";
-import PlanView from "./components/planView";
-import Header from "./components/header";
-import AuthModal from "./components/AuthModal";
-import UnlockModal from "./components/UnlockModal";
+/**
+ * Main App Component
+ * Root component that manages application state and routing
+ * Handles quiz → summary → plan flow
+ */
+
+import React, { useState, useCallback, useRef, useEffect, lazy, Suspense } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import LoadingSpinner from "./components/loadingSpinner";
 import "./style.css";
 import "./header_modal_styles.css";
 
+// Lazy load heavy components for code splitting
+const Quiz = lazy(() => import("./components/quiz"));
+const Summary = lazy(() => import("./components/summary"));
+const PlanView = lazy(() => import("./components/planView"));
+const Header = lazy(() => import("./components/header"));
+const AuthModal = lazy(() => import("./components/AuthModal"));
+const UnlockModal = lazy(() => import("./components/UnlockModal"));
+
+/**
+ * App Content Component
+ * Main application logic without AuthProvider wrapper
+ */
 function AppContent() {
   const { isLoggedIn, logout } = useAuth();
   const [stage, setStage] = useState("quiz"); // quiz → summary → plan
   const [quizAnswers, setQuizAnswers] = useState(null);
   const [planId, setPlanId] = useState(null);
+  
+  // Initialize planId from localStorage on mount, but validate it
+  useEffect(() => {
+    const storedPlanId = localStorage.getItem("current_plan_id");
+    if (storedPlanId && storedPlanId !== "pending" && storedPlanId.length >= 8) {
+      // Only set if it looks like a valid plan ID
+      setPlanId(storedPlanId);
+    } else if (storedPlanId) {
+      // Clear invalid plan ID from localStorage
+      localStorage.removeItem("current_plan_id");
+      localStorage.removeItem("planId");
+    }
+  }, []);
   
   // Unified modal state management
   const [modalState, setModalState] = useState({
@@ -29,7 +55,6 @@ function AppContent() {
 
   // Handle quiz submission
   const handleQuizSubmit = async (answers) => {
-    console.log("Quiz submitted with answers:", answers);
     setQuizAnswers(answers);
     setStage("summary");
   };
@@ -37,6 +62,10 @@ function AppContent() {
   // Handle summary confirmation (create plan and go to plan view)
   const handleSummaryComplete = async (generatedPlanId) => {
     setPlanId(generatedPlanId);
+    // Store planId in localStorage for UnlockModal access
+    if (generatedPlanId) {
+      localStorage.setItem("current_plan_id", generatedPlanId);
+    }
     setStage("plan");
   };
 
@@ -62,17 +91,10 @@ function AppContent() {
   }, []);
 
   const openUnlockModal = useCallback(() => {
-    // Check if user is logged in
-    if (!isLoggedIn) {
-      // Show auth modal first, with unlock as pending action
-      openAuthModal('unlocking', () => {
-        setModalState(prev => ({ ...prev, showUnlock: true }));
-      });
-    } else {
-      // User is logged in, open unlock modal directly
-      setModalState(prev => ({ ...prev, showUnlock: true }));
-    }
-  }, [isLoggedIn, openAuthModal]);
+    // Instant unlock - no login required (mock payment mode)
+    // Open unlock modal directly without auth check
+    setModalState(prev => ({ ...prev, showUnlock: true }));
+  }, []);
 
   const closeUnlockModal = useCallback(() => {
     setModalState(prev => ({ ...prev, showUnlock: false }));
@@ -116,13 +138,9 @@ function AppContent() {
    * Called after successful unlock to refresh plan state
    */
   const handlePlanRefresh = useCallback(async () => {
-    console.log("Global plan refresh triggered");
-    
     // Call the refresh callback if it's registered
     if (planRefreshCallbackRef.current?.refreshPlan) {
       await planRefreshCallbackRef.current.refreshPlan();
-    } else {
-      console.warn("Plan refresh callback not registered yet");
     }
   }, []);
 
@@ -135,22 +153,22 @@ function AppContent() {
       refreshPlan: refreshFn,
       clearPlan: clearFn
     };
-    console.log("Plan refresh callback registered");
   }, []);
 
   // Handle plan unlock success
   const handleUnlockSuccess = useCallback(async (result) => {
-    console.log("Plan unlock success:", result);
-    
-    // Refresh plan data to get updated tier
-    await handlePlanRefresh();
+    // Refresh plan data to get updated tier (stages 2 & 3 unlocked)
+    if (planRefreshCallbackRef.current?.refreshPlan) {
+      await planRefreshCallbackRef.current.refreshPlan();
+    } else {
+      await handlePlanRefresh();
+    }
     
     // Close unlock modal
     closeUnlockModal();
     
     // If we're on summary stage and have a planId, navigate to plan view
     if (stage === "summary" && planId) {
-      console.log("Navigating to plan view after unlock success");
       setStage("plan");
     }
   }, [handlePlanRefresh, closeUnlockModal, stage, planId]);
@@ -158,61 +176,76 @@ function AppContent() {
   // Render based on current stage
   return (
     <div className="app-wrapper">
-      {/* Header */}
-      <Header 
-        isLoggedIn={isLoggedIn}
-        onSignIn={() => openAuthModal('viewing')}
-        onSignOut={handleSignOut}
-      />
+      {/* Header with Suspense */}
+      <Suspense fallback={<LoadingSpinner />}>
+        <Header 
+          isLoggedIn={isLoggedIn}
+          onSignIn={() => openAuthModal('viewing')}
+          onSignOut={handleSignOut}
+        />
+      </Suspense>
 
       {/* Background effects */}
       <div className="background-grid"></div>
       <div className="background-orb orb-one"></div>
       <div className="background-orb orb-two"></div>
 
-      {/* Stage components wrapped in error boundaries */}
+      {/* Stage components wrapped in error boundaries and Suspense */}
       {stage === "quiz" && (
         <ErrorBoundary title="Quiz Error" message="We couldn't load the quiz. Please refresh the page.">
-          <Quiz onComplete={handleQuizSubmit} />
+          <Suspense fallback={<LoadingSpinner />}>
+            <Quiz onComplete={handleQuizSubmit} />
+          </Suspense>
         </ErrorBoundary>
       )}
 
       {stage === "summary" && (
         <ErrorBoundary title="Summary Error" message="We couldn't load your summary. Please try again.">
-          <Summary 
-            answers={quizAnswers} 
-            onComplete={handleSummaryComplete}
-            onUnlock={openUnlockModal}
-            registerPlanRefresh={registerPlanRefresh}
-          />
+          <Suspense fallback={<LoadingSpinner />}>
+            <Summary 
+              answers={quizAnswers} 
+              onComplete={handleSummaryComplete}
+              onUnlock={openUnlockModal}
+              registerPlanRefresh={registerPlanRefresh}
+            />
+          </Suspense>
         </ErrorBoundary>
       )}
 
       {stage === "plan" && planId && (
         <ErrorBoundary title="Plan Error" message="We couldn't load your plan. Please refresh to try again.">
-          <PlanView 
-            planId={planId} 
-            onUnlock={openUnlockModal}
-            registerPlanRefresh={registerPlanRefresh}
-          />
+          <Suspense fallback={<LoadingSpinner />}>
+            <PlanView 
+              planId={planId} 
+              onUnlock={openUnlockModal}
+              registerPlanRefresh={registerPlanRefresh}
+            />
+          </Suspense>
         </ErrorBoundary>
       )}
 
-      {/* Modals */}
-      <AuthModal
-        isOpen={modalState.showAuth}
-        onClose={closeAuthModal}
-        onSuccess={handleAuthSuccess}
-        purpose={modalState.authPurpose}
-      />
+      {/* Modals with Suspense */}
+      {modalState.showAuth && (
+        <Suspense fallback={<LoadingSpinner />}>
+          <AuthModal
+            isOpen={modalState.showAuth}
+            onClose={closeAuthModal}
+            onSuccess={handleAuthSuccess}
+            purpose={modalState.authPurpose}
+          />
+        </Suspense>
+      )}
 
-      <UnlockModal
-        isOpen={modalState.showUnlock}
-        onClose={closeUnlockModal}
-        onUnlockSuccess={handleUnlockSuccess}
-        planId={planId}
-        onNeedAuth={() => openAuthModal('unlocking', openUnlockModal)}
-      />
+      {modalState.showUnlock && (
+        <Suspense fallback={<LoadingSpinner />}>
+          <UnlockModal
+            isOpen={modalState.showUnlock}
+            onClose={closeUnlockModal}
+            onUnlockSuccess={handleUnlockSuccess}
+            planId={planId || localStorage.getItem("current_plan_id") || null}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

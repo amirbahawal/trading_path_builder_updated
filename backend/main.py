@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
 import os
@@ -61,16 +62,22 @@ def get_allowed_origins():
     origins = []
     
     if ENV == "development":
-        # Development: Allow localhost
+        # Development: Allow localhost on common ports and network IPs
+        frontend_port = os.getenv("FRONTEND_PORT", "3000")
         origins = [
-            "http://localhost:3000",
-            "http://localhost:3001",
-            "http://127.0.0.1:3000",
-            "http://127.0.0.1:3001",
+            f"http://localhost:{frontend_port}",
+            f"http://localhost:3000",
+            f"http://localhost:3001",
+            f"http://127.0.0.1:{frontend_port}",
+            f"http://127.0.0.1:3000",
+            f"http://127.0.0.1:3001",
         ]
+        
+        # Add common network IP patterns for development (192.168.x.x, 10.x.x.x)
+        # User can add specific IP via ALLOWED_ORIGINS env var
     else:
         # Production: Only allow configured frontend URL
-        frontend_url = os.getenv("FRONTEND_URL", "")
+        frontend_url = settings.FRONTEND_URL or os.getenv("FRONTEND_URL", "")
         if frontend_url:
             origins = [frontend_url]
             # Also allow without trailing slash
@@ -82,7 +89,7 @@ def get_allowed_origins():
             logger.warning("FRONTEND_URL not set - CORS may be too restrictive")
     
     # Add any additional origins from environment
-    additional_origins = os.getenv("ALLOWED_ORIGINS", "")
+    additional_origins = settings.ALLOWED_ORIGINS or os.getenv("ALLOWED_ORIGINS", "")
     if additional_origins:
         origins.extend([origin.strip() for origin in additional_origins.split(",") if origin.strip()])
     
@@ -91,19 +98,46 @@ def get_allowed_origins():
 origins = get_allowed_origins()
 logger.info(f"CORS allowed origins: {origins}")
 
+# CORS Configuration
+# Note: Cannot use "*" with allow_credentials=True, so we use explicit origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
 
-# Add global error handler
+# Add global error handler for HTTPException (FastAPI's built-in exceptions)
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTPException with CORS headers"""
+    from fastapi.responses import JSONResponse
+    
+    # Create response with CORS headers
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "error": f"HTTP {exc.status_code}"}
+    )
+    
+    # Add CORS headers
+    origin = request.headers.get("origin")
+    allowed_origins = get_allowed_origins()
+    if origin and (origin in allowed_origins or settings.ENV == "development"):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    
+    return response
+
+# Add global error handler for all other exceptions
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Global exception handler"""
+    """Global exception handler with CORS headers"""
+    from fastapi.responses import JSONResponse
+    
     timestamp = datetime.utcnow().isoformat()
     path = str(request.url)
     
@@ -111,24 +145,48 @@ async def global_exception_handler(request: Request, exc: Exception):
     
     # Hide stack traces in production
     if settings.ENV == "development":
-        return HTTPException(
-            status_code=500,
-            detail={
-                "error": "Internal Server Error",
-                "message": str(exc),
-                "type": type(exc).__name__,
-                "path": path,
-                "timestamp": timestamp
-            }
-        )
+        detail = {
+            "error": "Internal Server Error",
+            "message": str(exc),
+            "type": type(exc).__name__,
+            "path": path,
+            "timestamp": timestamp
+        }
     else:
-        return HTTPException(
-            status_code=500,
-            detail={
-                "error": "Internal Server Error",
-                "message": "An unexpected error occurred"
-            }
-        )
+        detail = {
+            "error": "Internal Server Error",
+            "message": "An unexpected error occurred"
+        }
+    
+    # Return JSONResponse with CORS headers
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": detail}
+    )
+    
+    # Add CORS headers for general exception responses
+    origin = request.headers.get("origin")
+    allowed_origins = get_allowed_origins()
+    
+    # In development, be more permissive with CORS
+    if settings.ENV == "development":
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        else:
+            # Fallback: allow common development origins
+            response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    else:
+        # Production: only allow configured origins
+        if origin and origin in allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    
+    return response
 
 # Include routers
 app.include_router(quiz.router, prefix="/quiz", tags=["Quiz"])
@@ -222,17 +280,8 @@ async def uptime_check():
         "database": "connected" if db_healthy else "disconnected"
     }
 
-# Error handlers
-@app.exception_handler(404)
-async def not_found_handler(request, exc):
-    return HTTPException(
-        status_code=404,
-        detail={
-            "error": "Not Found",
-            "message": "The requested resource was not found",
-            "path": str(request.url)
-        }
-    )
+# 404 handler is now handled by HTTPException handler above
+# No need for separate 404 handler - FastAPI will raise HTTPException(404) automatically
 
 # Startup event
 @app.on_event("startup")

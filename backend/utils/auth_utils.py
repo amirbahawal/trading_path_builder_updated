@@ -21,7 +21,9 @@ except ImportError as exc:  # pragma: no cover - development safety net
 from fastapi import Depends, Header, HTTPException
 from core.config import settings
 
-SECRET_KEY = os.environ.get("APP_AUTH_SECRET", "dev-secret-change-me")
+# Use APP_AUTH_SECRET from environment, fallback to settings if available
+# This allows the secret to be configured via .env file
+SECRET_KEY = os.environ.get("APP_AUTH_SECRET", getattr(settings, "APP_AUTH_SECRET", "dev-secret-change-me"))
 TOKEN_TTL_SECONDS = 60 * 60 * 24  # 24 hours
 
 

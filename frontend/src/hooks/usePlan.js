@@ -19,23 +19,45 @@ export const usePlan = (planId, autoFetch = true) => {
    */
   const fetchPlan = useCallback(async () => {
     if (!planId) {
-      console.warn("usePlan: No planId provided");
-      return;
+      return null;
     }
+
+    // Clean planId: remove "plan-" prefix if present
+    const cleanPlanId = planId.startsWith("plan-") ? planId.substring(5) : planId;
 
     setLoading(true);
     setError(null);
 
     try {
-      console.log(`Fetching plan: ${planId}`);
-      const data = await getPlan(planId);
-      setPlan(data);
-      setLastFetchTime(Date.now());
-      console.log(`Plan fetched successfully:`, data);
-      return data;
+      const data = await getPlan(cleanPlanId);
+      if (data) {
+        setPlan(data);
+        setLastFetchTime(Date.now());
+        return data;
+      } else {
+        setError("Plan data is empty. The server returned no data.");
+        return null;
+      }
     } catch (err) {
-      console.error("Error fetching plan:", err);
-      setError(err.message || "Failed to load plan");
+      // Set user-friendly error message
+      let errorMsg = "Failed to load plan.";
+      if (err.message) {
+        errorMsg = err.message;
+      } else if (err.isNetworkError) {
+        errorMsg = "Cannot connect to server. Please check if the backend is running.";
+      } else if (err.status === 404) {
+        errorMsg = "Plan not found. Please create a new plan.";
+        // Clear invalid plan ID from localStorage to prevent repeated requests
+        try {
+          localStorage.removeItem("current_plan_id");
+          localStorage.removeItem("planId");
+        } catch (e) {
+          // Ignore localStorage errors
+        }
+      } else if (err.status === 500) {
+        errorMsg = "Server error. Please try again later.";
+      }
+      setError(errorMsg);
       return null;
     } finally {
       setLoading(false);
@@ -46,7 +68,6 @@ export const usePlan = (planId, autoFetch = true) => {
    * Refresh plan data (force refetch)
    */
   const refreshPlan = useCallback(async () => {
-    console.log("Refreshing plan data...");
     return await fetchPlan();
   }, [fetchPlan]);
 
@@ -57,7 +78,6 @@ export const usePlan = (planId, autoFetch = true) => {
     setPlan(null);
     setError(null);
     setLastFetchTime(null);
-    console.log("Plan data cleared");
   }, []);
 
   /**
@@ -76,10 +96,28 @@ export const usePlan = (planId, autoFetch = true) => {
 
   /**
    * Auto-fetch on mount if enabled
+   * Only fetch if planId is valid (not empty, not "pending", not too short)
    */
   useEffect(() => {
     if (autoFetch && planId) {
-      fetchPlan();
+      // Validate planId before fetching
+      const cleanPlanId = planId.startsWith("plan-") ? planId.substring(5) : planId;
+      
+      // Skip if planId is clearly invalid (too short, empty, or "pending")
+      if (cleanPlanId && cleanPlanId !== "pending" && cleanPlanId.length >= 8) {
+        fetchPlan();
+      } else {
+        // Invalid planId - clear it and set error
+        setError("Invalid plan ID. Please create a new plan.");
+        setLoading(false);
+        // Clear invalid plan ID from localStorage
+        try {
+          localStorage.removeItem("current_plan_id");
+          localStorage.removeItem("planId");
+        } catch (e) {
+          // Ignore localStorage errors
+        }
+      }
     }
   }, [autoFetch, planId, fetchPlan]);
 

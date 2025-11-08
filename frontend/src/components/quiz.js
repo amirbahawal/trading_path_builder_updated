@@ -1,4 +1,12 @@
-// src/components/quiz.js
+/**
+ * Quiz Component
+ * Multi-step quiz component that collects user trading preferences
+ * Handles intro, honesty check, and all quiz questions with progress tracking
+ * 
+ * @component
+ * @param {Function} onComplete - Callback when quiz is completed with answers object
+ */
+
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { QUIZ_QUESTIONS } from "../constants/questions";
 
@@ -472,7 +480,8 @@ function Quiz({ onComplete }) {
   );
 }
 
-export default Quiz;
+// Memoize Quiz component to prevent unnecessary re-renders
+export default React.memo(Quiz);
 
 
 

@@ -1,13 +1,44 @@
+/**
+ * Unlock Modal Component
+ * Handles the unlock flow for stages 2 and 3
+ * Instant unlock mode - grants pro tier immediately
+ * 
+ * @component
+ * @param {boolean} isOpen - Whether modal is visible
+ * @param {Function} onClose - Callback to close modal
+ * @param {Function} onUnlockSuccess - Callback when unlock succeeds
+ * @param {string} planId - Plan ID to unlock
+ * @param {Function} onNeedAuth - Callback if authentication is needed (unused in instant unlock mode)
+ */
+
 import React, { useState, useEffect } from "react";
 import { startCheckout } from "../api/plan";
 import { useAuth } from "../contexts/AuthContext";
 import { logEvent } from "../api/analytics";
 
-const UnlockModal = ({ isOpen, onClose, onUnlockSuccess, planId, onNeedAuth }) => {
-  const { userId, isLoggedIn } = useAuth();
+const UnlockModal = React.memo(({ isOpen, onClose, onUnlockSuccess, planId }) => {
+  const { userId } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+  const [resolvedPlanId, setResolvedPlanId] = useState(null);
+  
+  // Try to resolve planId when modal opens
+  useEffect(() => {
+    if (isOpen && !planId) {
+      // Try to get planId from localStorage or try to fetch the latest plan
+      const storedPlanId = localStorage.getItem("current_plan_id");
+      if (storedPlanId) {
+        setResolvedPlanId(storedPlanId);
+      }
+    } else if (isOpen && planId) {
+      setResolvedPlanId(planId);
+      // Store for future use
+      if (planId && planId !== "pending") {
+        localStorage.setItem("current_plan_id", planId);
+      }
+    }
+  }, [isOpen, planId]);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -31,55 +62,64 @@ const UnlockModal = ({ isOpen, onClose, onUnlockSuccess, planId, onNeedAuth }) =
   }, [isOpen]);
 
   const handleUnlock = async () => {
-    // Track unlock_click event when user initiates unlock
-    logEvent("unlock_click", {
-      plan_id: planId,
-      user_id: userId || "anon"
-    });
+    // Use resolved planId (from props, localStorage, or try to get from current plan)
+    let currentPlanId = resolvedPlanId || planId;
     
-    // If not logged in, require sign up first
-    if (!isLoggedIn) {
-      if (onNeedAuth) {
-        onClose();
-        setTimeout(() => onNeedAuth(), 300);
-        return;
-      } else {
-        setError("Please sign up or sign in first to unlock your plan");
-        return;
+    // If still no planId, try to get it from the most recent plan
+    if (!currentPlanId || currentPlanId === "pending") {
+      try {
+        // Try to get plan from localStorage or fetch
+        const storedPlanId = localStorage.getItem("current_plan_id");
+        if (storedPlanId && storedPlanId !== "pending") {
+          currentPlanId = storedPlanId;
+        }
+      } catch (e) {
+        // Silently handle planId resolution errors
       }
     }
     
-    if (!planId) {
-      setError("Plan is not ready yet. Please try again in a moment.");
+    // Track unlock_click event when user initiates unlock
+    logEvent("unlock_click", {
+      plan_id: currentPlanId,
+      user_id: userId || "anon"
+    });
+    
+    // Check if planId is available
+    if (!currentPlanId || currentPlanId === "pending") {
+      setError("Plan is not ready yet. Please wait a moment and try again.");
       return;
     }
     
+    // Instant unlock - no login required (mock payment mode)
     setLoading(true);
     setError("");
     
     try {
-      // Use userId from auth context, or fallback identifier
-      const userIdentifier = userId || "user";
+      // Use "anon" as user_id if not logged in (instant unlock without auth)
+      const userIdentifier = userId || "anon";
       
       // Instant unlock - single click unlocks stages 2 and 3
-      const result = await startCheckout(planId, "", userIdentifier);
-      console.log("Unlock result:", result);
+      const result = await startCheckout(currentPlanId, "", userIdentifier);
       
-      // Immediate success
-      setSuccess(true);
-      
-      // Show success message briefly, then call callback
-      setTimeout(() => {
-        if (onUnlockSuccess) {
-          onUnlockSuccess(result);
-        }
-        // Reset state
-        setError("");
-        setSuccess(false);
-      }, 1500);
+      if (result && result.success) {
+        // Immediate success
+        setSuccess(true);
+        
+        // Show success message briefly, then call callback
+        setTimeout(() => {
+          if (onUnlockSuccess) {
+            onUnlockSuccess(result);
+          }
+          // Reset state
+          setError("");
+          setSuccess(false);
+        }, 1500);
+      } else {
+        throw new Error(result?.message || "Unlock failed");
+      }
     } catch (err) {
       console.error("Unlock failed:", err);
-      setError("Unable to unlock the plan. Please try again.");
+      setError(err.message || "Unable to unlock the plan. Please try again.");
       setLoading(false);
     }
   };
@@ -144,39 +184,6 @@ const UnlockModal = ({ isOpen, onClose, onUnlockSuccess, planId, onNeedAuth }) =
         </div>
         
         <div className="modal-body">
-          {!isLoggedIn && (
-            <div style={{ 
-              marginBottom: '16px', 
-              padding: '12px',
-              borderRadius: '8px',
-              background: 'rgba(255, 215, 0, 0.15)',
-              border: '1px solid rgba(255, 215, 0, 0.3)'
-            }}>
-              <p style={{ margin: '0 0 8px', color: '#ffd700', fontSize: '0.9rem', fontWeight: '600' }}>
-                💡 Please sign up or sign in first
-              </p>
-              {onNeedAuth && (
-                <button
-                  onClick={() => {
-                    onClose();
-                    setTimeout(() => onNeedAuth(), 300);
-                  }}
-                  style={{
-                    background: 'transparent',
-                    border: '1px solid #ffd700',
-                    color: '#ffd700',
-                    padding: '6px 16px',
-                    borderRadius: '6px',
-                    fontSize: '0.85rem',
-                    cursor: 'pointer',
-                    width: '100%'
-                  }}
-                >
-                  Sign Up / Sign In
-                </button>
-              )}
-            </div>
-          )}
           <p style={{ marginBottom: '20px', fontSize: '1rem' }}>
             Click below to unlock the full plan and access all stages (Stages 2 & 3):
           </p>
@@ -221,6 +228,8 @@ const UnlockModal = ({ isOpen, onClose, onUnlockSuccess, planId, onNeedAuth }) =
       </div>
     </div>
   );
-};
+});
+
+UnlockModal.displayName = 'UnlockModal';
 
 export default UnlockModal;

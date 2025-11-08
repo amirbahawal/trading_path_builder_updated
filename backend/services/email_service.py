@@ -21,6 +21,11 @@ def _get_gmail_credentials():
     from core.config import settings
     return settings.GMAIL_ADDRESS, settings.GMAIL_APP_PASSWORD
 
+def _get_frontend_url():
+    """Lazy load frontend URL from settings"""
+    from core.config import settings
+    return settings.FRONTEND_URL
+
 
 def send_otp_email(email: str, otp_code: str, purpose: str = "login") -> bool:
     """
@@ -199,6 +204,7 @@ def send_welcome_email(email: str, user_name: str = "User") -> bool:
         return True
     
     try:
+        frontend_url = _get_frontend_url()
         subject = "Welcome to Trading Path Builder! 🚀"
         html_content = f"""
         <html>
@@ -215,7 +221,7 @@ def send_welcome_email(email: str, user_name: str = "User") -> bool:
                     <h1>Welcome, {user_name}! 🎉</h1>
                     <p>Your Trading Path Builder account is ready.</p>
                     <p>Complete the quiz to get your personalized trading plan.</p>
-                    <a href="http://localhost:3000" class="button">Start Your Journey</a>
+                    <a href="{frontend_url}" class="button">Start Your Journey</a>
                     <p style="margin-top: 40px; color: #999; font-size: 12px;">Questions? Contact us at support@tradingpath.com</p>
                 </div>
             </body>
@@ -227,7 +233,7 @@ def send_welcome_email(email: str, user_name: str = "User") -> bool:
         msg["From"] = GMAIL_ADDRESS
         msg["To"] = email
         
-        text_content = f"Welcome, {user_name}! Your Trading Path Builder account is ready. Visit http://localhost:3000 to start."
+        text_content = f"Welcome, {user_name}! Your Trading Path Builder account is ready. Visit {frontend_url} to start."
         msg.attach(MIMEText(text_content, "plain"))
         msg.attach(MIMEText(html_content, "html"))
         

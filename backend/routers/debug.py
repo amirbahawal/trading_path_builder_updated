@@ -107,3 +107,114 @@ async def debug_reset_plan(plan_id: str):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+
+
+@router.get("/cache/list")
+async def list_cached_plans():
+    """List all cached plans with their fingerprints"""
+    db = SessionLocal()
+    try:
+        plans = db.query(Plan).order_by(Plan.created_at.desc()).all()
+        
+        cached_plans = []
+        for plan in plans:
+            # Count stages for this plan
+            stages_count = db.query(Stage).filter(Stage.plan_id == plan.id).count()
+            
+            # Get answers summary
+            answers_json = plan.answers_json
+            answers_summary = {}
+            if isinstance(answers_json, dict):
+                answers_summary = {
+                    "experience": answers_json.get("experience", "N/A"),
+                    "timeframe": answers_json.get("timeframe", "N/A"),
+                    "riskTolerance": answers_json.get("riskTolerance", "N/A"),
+                    "goal": answers_json.get("goal", "N/A")
+                }
+            
+            cached_plans.append({
+                "plan_id": str(plan.id),
+                "user_id": str(plan.user_id) if plan.user_id else None,
+                "fingerprint": plan.answers_fingerprint,
+                "fingerprint_short": plan.answers_fingerprint[:16] + "..." if plan.answers_fingerprint else None,
+                "template_version": plan.template_version,
+                "persona": plan.persona_label,
+                "stages_count": stages_count,
+                "answers": answers_summary,
+                "created_at": plan.created_at.isoformat() if plan.created_at else None
+            })
+        
+        # Group by fingerprint to show cache hits
+        fingerprint_counts = {}
+        for plan in cached_plans:
+            fp = plan["fingerprint"]
+            if fp not in fingerprint_counts:
+                fingerprint_counts[fp] = []
+            fingerprint_counts[fp].append(plan["plan_id"])
+        
+        unique_fingerprints = len(fingerprint_counts)
+        total_plans = len(cached_plans)
+        
+        return {
+            "total_plans": total_plans,
+            "unique_fingerprints": unique_fingerprints,
+            "cache_efficiency": f"{(unique_fingerprints / total_plans * 100):.1f}%" if total_plans > 0 else "0%",
+            "fingerprint_groups": {
+                fp: {
+                    "count": len(plan_ids),
+                    "plan_ids": plan_ids
+                }
+                for fp, plan_ids in fingerprint_counts.items()
+            },
+            "cached_plans": cached_plans
+        }
+    finally:
+        db.close()
+
+
+@router.get("/cache/fingerprint/{fingerprint}")
+async def get_plans_by_fingerprint(fingerprint: str):
+    """Get all plans with a specific fingerprint (cache lookup test)"""
+    db = SessionLocal()
+    try:
+        plans = db.query(Plan).filter(Plan.answers_fingerprint == fingerprint).all()
+        
+        if not plans:
+            return {
+                "found": False,
+                "message": f"No plans found with fingerprint: {fingerprint[:16]}...",
+                "fingerprint": fingerprint
+            }
+        
+        result = {
+            "found": True,
+            "count": len(plans),
+            "fingerprint": fingerprint,
+            "fingerprint_short": fingerprint[:16] + "...",
+            "plans": []
+        }
+        
+        for plan in plans:
+            stages = db.query(Stage).filter(Stage.plan_id == plan.id).order_by(Stage.stage_number).all()
+            
+            result["plans"].append({
+                "plan_id": str(plan.id),
+                "user_id": str(plan.user_id) if plan.user_id else None,
+                "template_version": plan.template_version,
+                "persona": plan.persona_label,
+                "answers": plan.answers_json,
+                "stages": [
+                    {
+                        "stage_number": s.stage_number,
+                        "title": s.title,
+                        "is_free": s.is_free,
+                        "content_length": len(s.content_md)
+                    }
+                    for s in stages
+                ],
+                "created_at": plan.created_at.isoformat() if plan.created_at else None
+            })
+        
+        return result
+    finally:
+        db.close()

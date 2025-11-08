@@ -1,4 +1,5 @@
-export const API_BASE_URL =
-  import.meta.env.VITE_BACKEND_URL ||
-  process.env.REACT_APP_BACKEND_URL ||
-  "http://127.0.0.1:8000";
+// This file is deprecated - use constants.js instead
+// Keeping for backward compatibility
+import { API_CONFIG } from "./constants";
+
+export const API_BASE_URL = API_CONFIG.BASE_URL;

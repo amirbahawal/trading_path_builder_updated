@@ -1,8 +1,20 @@
+/**
+ * Auth Modal Component
+ * Handles user authentication via email OTP
+ * Supports login flow with email verification code
+ * 
+ * @component
+ * @param {boolean} isOpen - Whether modal is visible
+ * @param {Function} onClose - Callback to close modal
+ * @param {Function} onSuccess - Callback when authentication succeeds
+ * @param {string} purpose - Purpose of authentication (e.g., "unlock")
+ */
+
 import React, { useState, useEffect } from "react";
 import { sendLoginCode, verifyLoginCode } from "../api/auth";
 import { useAuth } from "../contexts/AuthContext";
 
-const AuthModal = ({ isOpen, onClose, onSuccess, purpose }) => {
+const AuthModal = React.memo(({ isOpen, onClose, onSuccess, purpose }) => {
   const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -280,6 +292,8 @@ const AuthModal = ({ isOpen, onClose, onSuccess, purpose }) => {
       </div>
     </div>
   );
-};
+});
+
+AuthModal.displayName = 'AuthModal';
 
 export default AuthModal;

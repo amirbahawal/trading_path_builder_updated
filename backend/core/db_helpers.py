@@ -84,12 +84,104 @@ def get_plan_from_db(plan_id: str) -> Optional[dict]:
     """
     db = SessionLocal()
     try:
-        plan = db.query(Plan).filter(Plan.id == plan_id).first()
+        # Clean plan_id: remove "plan-" prefix if present
+        clean_plan_id = plan_id
+        if isinstance(plan_id, str) and plan_id.startswith("plan-"):
+            clean_plan_id = plan_id[5:]  # Remove "plan-" prefix
+            logger.debug(f"Removed 'plan-' prefix from plan_id: {plan_id} -> {clean_plan_id}")
+        
+        # Try to convert plan_id to UUID
+        plan_uuid = None
+        try:
+            plan_uuid = uuid.UUID(clean_plan_id) if isinstance(clean_plan_id, str) else clean_plan_id
+        except (ValueError, AttributeError):
+            # If plan_id is not a valid UUID, try to find by partial match or text search
+            # Only log at debug level - invalid plan IDs are expected (user might have old/invalid ID)
+            logger.debug(f"Invalid UUID format for plan_id: {plan_id}, trying text search")
+            
+            # Skip search if plan_id is too short (likely invalid)
+            if len(clean_plan_id) < 8:
+                logger.debug(f"Plan ID too short ({len(clean_plan_id)} chars), skipping search: {clean_plan_id}")
+                return None
+            
+            # Remove dashes and try to find matching plan
+            clean_id_no_dashes = clean_plan_id.replace("-", "")
+            # Try to find plan where ID contains this substring
+            # SQLite stores UUIDs as TEXT, so we can search directly
+            from sqlalchemy import text
+            try:
+                # SQLite-compatible query - search in text fields
+                result = db.execute(text("""
+                    SELECT id FROM plans 
+                    WHERE id LIKE :pattern 
+                    OR id LIKE :pattern_no_dash
+                    LIMIT 1
+                """), {
+                    "pattern": f"%{clean_plan_id}%",
+                    "pattern_no_dash": f"%{clean_id_no_dashes}%"
+                }).first()
+                
+                if result:
+                    # Found a matching plan, convert the result to UUID
+                    found_id = result[0]
+                    if isinstance(found_id, str):
+                        try:
+                            plan_uuid = uuid.UUID(found_id)
+                        except ValueError:
+                            # If still not a UUID, use the string directly for query
+                            plan = db.query(Plan).filter(Plan.id == found_id).first()
+                            if plan:
+                                # Convert plan.id to string for consistency
+                                plan_uuid = plan.id
+                    else:
+                        plan_uuid = found_id
+                else:
+                    # No plan found - this is expected for invalid plan IDs
+                    logger.debug(f"No plan found matching pattern: {clean_plan_id}")
+                    return None
+            except Exception as search_error:
+                # Log at debug level - search errors are expected for invalid IDs
+                logger.debug(f"Error searching for plan by text: {search_error}")
+                return None
+        
+        # Query plan by UUID
+        if plan_uuid:
+            plan = db.query(Plan).filter(Plan.id == plan_uuid).first()
+        else:
+            # Fallback: try direct string match
+            plan = db.query(Plan).filter(Plan.id == clean_plan_id).first()
+        
         if not plan:
+            # Log at debug level - plan not found is a valid 404 response
+            logger.debug(f"Plan not found in database: {plan_id}")
             return None
         
         # Get stages for this plan
         stages = db.query(Stage).filter(Stage.plan_id == plan.id).order_by(Stage.stage_number).all()
+        
+        # Build stages list - ensure we have all 3 stages
+        stages_list = []
+        stages_dict = {stage.stage_number: stage for stage in stages}
+        
+        # Always return all 3 stages (create placeholders if missing)
+        for stage_num in [1, 2, 3]:
+            if stage_num in stages_dict:
+                stage = stages_dict[stage_num]
+                stages_list.append({
+                    "stage_number": stage.stage_number,
+                    "title": stage.title,
+                    "is_free": stage.is_free,
+                    "content_md": stage.content_md
+                })
+            else:
+                # Create placeholder for missing stage
+                logger.warning(f"Stage {stage_num} not found for plan {plan.id}, creating placeholder")
+                stages_list.append({
+                    "stage_number": stage_num,
+                    "title": f"Stage {stage_num}",
+                    "is_free": (stage_num == 1),
+                    "content_md": ""
+                })
         
         return {
             "plan_id": str(plan.id),
@@ -100,15 +192,7 @@ def get_plan_from_db(plan_id: str) -> Optional[dict]:
             "persona_label": plan.persona_label,
             "overview_md": plan.overview_md,
             "created_at": plan.created_at.isoformat() if plan.created_at else None,
-            "stages": [
-                {
-                    "stage_number": stage.stage_number,
-                    "title": stage.title,
-                    "is_free": stage.is_free,
-                    "content_md": stage.content_md
-                }
-                for stage in stages
-            ]
+            "stages": stages_list
         }
         
     except Exception as e:

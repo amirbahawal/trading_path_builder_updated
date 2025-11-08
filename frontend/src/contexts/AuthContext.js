@@ -47,7 +47,6 @@ export const AuthProvider = ({ children }) => {
         if (storedToken && storedUserId && storedEmail && storedExpiresAt) {
           // Check if token is expired
           if (isTokenExpired(storedExpiresAt)) {
-            console.log("Token expired, clearing auth state");
             clearAuthState();
           } else {
             // Restore auth state
@@ -55,7 +54,6 @@ export const AuthProvider = ({ children }) => {
             setUserId(storedUserId);
             setEmail(storedEmail);
             setIsLoggedIn(true);
-            console.log("Auth state loaded from localStorage");
           }
         }
       } catch (error) {
@@ -70,7 +68,6 @@ export const AuthProvider = ({ children }) => {
 
     // Listen for 401 unauthorized events from API client
     const handleUnauthorized = () => {
-      console.log("Received unauthorized event, logging out");
       clearAuthState();
     };
 
@@ -100,8 +97,6 @@ export const AuthProvider = ({ children }) => {
       setUserId(userIdValue);
       setEmail(emailValue);
       setIsLoggedIn(true);
-
-      console.log("User logged in:", { userId: userIdValue, email: emailValue });
     } catch (error) {
       console.error("Error during login:", error);
       throw error;
@@ -113,7 +108,6 @@ export const AuthProvider = ({ children }) => {
    */
   const logout = () => {
     clearAuthState();
-    console.log("User logged out");
   };
 
   /**
