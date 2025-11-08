@@ -4,31 +4,41 @@
  * Automatically uses the correct backend URL from environment variables
  */
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { WebSocketClient, getWebSocketUrl } from "../utils/websocket";
 
 /**
  * Custom hook for WebSocket connections
  * 
- * @param {string} path - WebSocket path (default: "/ws")
+ * @param {string} _path - WebSocket path (deprecated, kept for compatibility, unused)
  * @param {Object} options - WebSocket options (reconnectInterval, maxReconnectAttempts, etc.)
  * @param {boolean} autoConnect - Whether to auto-connect on mount (default: true)
  * @returns {Object} WebSocket state and methods
  */
-export function useWebSocket(path = "/ws", options = {}, autoConnect = true) {
+export function useWebSocket(_path = "/ws", options = {}, autoConnect = true) {
+  // Note: path parameter is kept for API compatibility but WebSocket URL
+  // is automatically derived from API_CONFIG.BASE_URL
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState(null);
   const [lastMessage, setLastMessage] = useState(null);
   const wsClientRef = useRef(null);
+  const optionsRef = useRef(options);
+  const autoConnectRef = useRef(autoConnect);
 
-  // Get WebSocket URL
-  const wsUrl = useRef(getWebSocketUrl()).current;
+  // Update refs when props change
+  useEffect(() => {
+    optionsRef.current = options;
+    autoConnectRef.current = autoConnect;
+  }, [options, autoConnect]);
 
-  // Initialize WebSocket client
+  // Get WebSocket URL (memoized to prevent recreation)
+  const wsUrl = useMemo(() => getWebSocketUrl(), []);
+
+  // Initialize WebSocket client (only once on mount)
   useEffect(() => {
     if (!wsClientRef.current) {
-      wsClientRef.current = new WebSocketClient(wsUrl, options);
+      wsClientRef.current = new WebSocketClient(wsUrl, optionsRef.current);
       
       // Set up event listeners
       wsClientRef.current.on("open", () => {
@@ -52,12 +62,6 @@ export function useWebSocket(path = "/ws", options = {}, autoConnect = true) {
       });
     }
 
-    // Auto-connect if enabled
-    if (autoConnect && !isConnected && !isConnecting) {
-      setIsConnecting(true);
-      wsClientRef.current.connect();
-    }
-
     // Cleanup on unmount
     return () => {
       if (wsClientRef.current) {
@@ -65,7 +69,16 @@ export function useWebSocket(path = "/ws", options = {}, autoConnect = true) {
         wsClientRef.current = null;
       }
     };
-  }, [autoConnect, wsUrl, options]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run once on mount
+
+  // Auto-connect effect (separate from initialization)
+  useEffect(() => {
+    if (autoConnectRef.current && wsClientRef.current && !isConnected && !isConnecting) {
+      setIsConnecting(true);
+      wsClientRef.current.connect();
+    }
+  }, [isConnected, isConnecting]);
 
   // Send message function
   const sendMessage = useCallback((data) => {
@@ -98,13 +111,19 @@ export function useWebSocket(path = "/ws", options = {}, autoConnect = true) {
   const subscribe = useCallback((messageType, callback) => {
     if (wsClientRef.current) {
       const messageHandler = (data) => {
-        if (data.type === messageType || data.event === messageType) {
+        if (data && (data.type === messageType || data.event === messageType)) {
           callback(data);
         }
       };
       wsClientRef.current.on("message", messageHandler);
-      return () => wsClientRef.current.off("message", messageHandler);
+      return () => {
+        if (wsClientRef.current) {
+          wsClientRef.current.off("message", messageHandler);
+        }
+      };
     }
+    // Return no-op cleanup function if client doesn't exist
+    return () => {};
   }, []);
 
   return {
@@ -129,35 +148,45 @@ export function useWebSocket(path = "/ws", options = {}, autoConnect = true) {
  */
 export function usePlanUnlockWebSocket(planId, onUnlockUpdate) {
   const { isConnected, error, subscribe, sendMessage } = useWebSocket("/ws", {}, !!planId);
+  const onUnlockUpdateRef = useRef(onUnlockUpdate);
+
+  // Update callback ref when it changes
+  useEffect(() => {
+    onUnlockUpdateRef.current = onUnlockUpdate;
+  }, [onUnlockUpdate]);
 
   useEffect(() => {
     if (!planId || !isConnected) return;
 
     // Subscribe to plan unlock updates
     const unsubscribe = subscribe("plan_unlocked", (data) => {
-      if (data.plan_id === planId) {
-        onUnlockUpdate?.(data);
+      if (data && data.plan_id === planId) {
+        onUnlockUpdateRef.current?.(data);
       }
     });
 
     // Subscribe to plan update events
     const unsubscribeUpdate = subscribe("plan_updated", (data) => {
-      if (data.plan_id === planId) {
-        onUnlockUpdate?.(data);
+      if (data && data.plan_id === planId) {
+        onUnlockUpdateRef.current?.(data);
       }
     });
 
     // Request current plan status
-    sendMessage({
-      type: "subscribe",
-      plan_id: planId
-    });
+    try {
+      sendMessage({
+        type: "subscribe",
+        plan_id: planId
+      });
+    } catch (err) {
+      console.warn("[usePlanUnlockWebSocket] Failed to send subscription message:", err);
+    }
 
     return () => {
-      unsubscribe?.();
-      unsubscribeUpdate?.();
+      if (unsubscribe) unsubscribe();
+      if (unsubscribeUpdate) unsubscribeUpdate();
     };
-  }, [planId, isConnected, subscribe, sendMessage, onUnlockUpdate]);
+  }, [planId, isConnected, subscribe, sendMessage]);
 
   return {
     isConnected,
