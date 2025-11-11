@@ -1,6 +1,6 @@
 # Optional SQLAlchemy imports
 try:
-    from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Boolean, JSON, UUID  # type: ignore
+    from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Boolean, JSON, UUID, Index  # type: ignore
     SQLALCHEMY_AVAILABLE = True
 except ImportError:
     SQLALCHEMY_AVAILABLE = False
@@ -89,6 +89,11 @@ else:
         persona_label = Column(String)
         overview_md = Column(String)
         created_at = Column(DateTime, default=datetime.utcnow)
+        
+        # Index for faster fingerprint lookups
+        __table_args__ = (
+            Index('idx_plans_fingerprint', 'answers_fingerprint'),
+        )
 
     class Stage(Base):
         __tablename__ = "stages"
@@ -106,6 +111,11 @@ else:
         user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
         tier = Column(String, nullable=False)  # 'free' or 'pro'
         created_at = Column(DateTime, default=datetime.utcnow)
+        
+        # Index for faster user lookups
+        __table_args__ = (
+            Index('idx_entitlements_user', 'user_id'),
+        )
 
     class AuthToken(Base):
         __tablename__ = "auth_tokens"
