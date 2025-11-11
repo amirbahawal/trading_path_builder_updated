@@ -11,38 +11,47 @@ logger = logging.getLogger(__name__)
 ANON_USER_UUID = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
 
-def _convert_plan_id_to_uuid(plan_id: str) -> uuid.UUID:
+def _convert_plan_id_to_uuid(plan_id) -> uuid.UUID:
     """
-    Convert plan_id string to UUID.
+    Convert plan_id to UUID.
     Plans are stored with UUID primary keys.
     
     Args:
-        plan_id: Plan ID string (UUID string or custom format)
+        plan_id: Plan ID (UUID object, UUID string, or string with "plan-" prefix)
         
     Returns:
         UUID object
     """
-    # First, try to convert directly if it's already a UUID string
+    # If already a UUID object, return it directly
+    if isinstance(plan_id, uuid.UUID):
+        return plan_id
+    
+    # If not a string, convert to string first
+    if not isinstance(plan_id, str):
+        plan_id = str(plan_id)
+    
+    # Remove "plan-" prefix if present
+    if plan_id.startswith("plan-"):
+        plan_id = plan_id[5:]  # Remove "plan-" prefix
+    
+    # Try to convert to UUID directly
     try:
         plan_uuid = uuid.UUID(plan_id)
-        # If it's a valid UUID, return it directly
-        # Don't check database - entitlement can be created even if plan doesn't exist yet
         return plan_uuid
     except ValueError:
-        pass
-    
-    # If it's a custom format like "plan-abc123", use deterministic UUID
-    namespace = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # DNS namespace
-    deterministic_uuid = uuid.uuid5(namespace, plan_id)
-    return deterministic_uuid
+        # If it's not a valid UUID format, use deterministic UUID
+        logger.warning(f"plan_id '{plan_id}' is not a valid UUID format, using deterministic UUID")
+        namespace = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # DNS namespace
+        deterministic_uuid = uuid.uuid5(namespace, plan_id)
+        return deterministic_uuid
 
 
-def _convert_to_uuid(value: str, default_name: str = "value") -> uuid.UUID:
+def _convert_to_uuid(value, default_name: str = "value") -> uuid.UUID:
     """
-    Convert a string to UUID, handling various formats.
+    Convert a value to UUID, handling various formats.
     
     Args:
-        value: String value to convert
+        value: Value to convert (UUID object, string, or other)
         default_name: Name for error messages
         
     Returns:
@@ -55,12 +64,16 @@ def _convert_to_uuid(value: str, default_name: str = "value") -> uuid.UUID:
     if isinstance(value, uuid.UUID):
         return value
     
+    # Convert to string if not already
+    if not isinstance(value, str):
+        value = str(value)
+    
     # Try to convert string to UUID
     try:
-        # Handle UUID string format
+        # Handle UUID string format (with or without dashes)
         return uuid.UUID(value)
     except ValueError:
-        # If it's a custom format like "plan-abc123", use deterministic UUID
+        # If it's not a valid UUID format, use deterministic UUID
         namespace = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # DNS namespace
         return uuid.uuid5(namespace, value)
 
@@ -92,13 +105,29 @@ def grant_entitlement(user_id: str, plan_id: str, tier: str = "pro") -> bool:
                 user_uuid = ANON_USER_UUID
         
         # Convert plan_id to UUID - try to find actual UUID from database first
+        from database.models import Plan
+        
+        # First, try to look up the plan in the database to get its actual UUID
+        plan_uuid = None
         try:
-            plan_uuid = _convert_plan_id_to_uuid(plan_id)
+            # Convert plan_id to UUID for lookup
+            lookup_uuid = _convert_plan_id_to_uuid(plan_id)
+            # Try to find the plan in database
+            plan = db.query(Plan).filter(Plan.id == lookup_uuid).first()
+            if plan:
+                # Use the actual UUID from the database
+                plan_uuid = plan.id
+                logger.info(f"grant_entitlement: Found plan in database: {plan_uuid}")
+            else:
+                # Plan not found - use the converted UUID anyway (might be created later)
+                plan_uuid = lookup_uuid
+                logger.warning(f"grant_entitlement: Plan not found in database, using converted UUID: {plan_uuid}")
         except Exception as e:
-            logger.error(f"Invalid plan_id format: {plan_id}, error: {e}")
+            logger.error(f"Invalid plan_id format or lookup failed: {plan_id}, error: {e}")
             # Try fallback conversion
             try:
                 plan_uuid = _convert_to_uuid(plan_id, "plan_id")
+                logger.info(f"grant_entitlement: Using fallback UUID conversion: {plan_uuid}")
             except (ValueError, AttributeError) as e2:
                 logger.error(f"Fallback plan_id conversion also failed: {e2}")
                 return False
@@ -198,10 +227,23 @@ def check_entitlement(user_id: Optional[str], plan_id: str) -> str:
                 logger.warning(f"check_entitlement: Invalid user_id format: {user_id}, error: {e}, using ANON_USER_UUID")
                 user_uuid = ANON_USER_UUID
         
-        # Convert plan_id to UUID - use same function as grant_entitlement for consistency
+        # Convert plan_id to UUID - use same lookup logic as grant_entitlement for consistency
+        from database.models import Plan
+        
+        plan_uuid = None
         try:
-            plan_uuid = _convert_plan_id_to_uuid(plan_id)
-            logger.debug(f"check_entitlement: Converted plan_id {plan_id} -> {plan_uuid}")
+            # Convert plan_id to UUID for lookup
+            lookup_uuid = _convert_plan_id_to_uuid(plan_id)
+            # Try to find the plan in database to get its actual UUID
+            plan = db.query(Plan).filter(Plan.id == lookup_uuid).first()
+            if plan:
+                # Use the actual UUID from the database
+                plan_uuid = plan.id
+                logger.debug(f"check_entitlement: Found plan in database: {plan_uuid}")
+            else:
+                # Plan not found - use the converted UUID anyway
+                plan_uuid = lookup_uuid
+                logger.debug(f"check_entitlement: Plan not found, using converted UUID: {plan_uuid}")
         except Exception as e:
             logger.error(f"check_entitlement: Invalid plan_id format: {plan_id}, error: {e}")
             # Try fallback conversion

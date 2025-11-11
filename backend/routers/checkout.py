@@ -62,6 +62,7 @@ async def create_checkout_session(request: CheckoutRequest):
                 # Generate all stages by calling plan generation
                 try:
                     from services.plan_generator import generate_plan_object
+                    from ai_client import AIClientError
                     answers = plan_data.get("answers_json", {})
                     
                     if not answers:
@@ -69,8 +70,15 @@ async def create_checkout_session(request: CheckoutRequest):
                     else:
                         logger.info(f"[CHECKOUT] Generating full plan with answers: {list(answers.keys())}")
                         # Generate full plan with all 3 stages
-                        plan_response = generate_plan_object(user_identifier, answers)
-                        logger.info(f"[CHECKOUT] Generated plan with {len(plan_response.stages)} stages")
+                        try:
+                            plan_response = generate_plan_object(user_identifier, answers)
+                            logger.info(f"[CHECKOUT] Generated plan with {len(plan_response.stages)} stages")
+                        except AIClientError as ai_error:
+                            logger.error(f"[CHECKOUT] Failed to generate plan via AI: {ai_error}")
+                            raise HTTPException(
+                                status_code=500,
+                                detail=f"Failed to generate plan content: {str(ai_error)}"
+                            )
                         
                         # Update database with generated stages 2 and 3
                         from database.connection import SessionLocal

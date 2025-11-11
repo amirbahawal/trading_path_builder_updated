@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Header, Depends
 from typing import Optional
 from pydantic import BaseModel
-from services.plan_generator import generate_plan_object, check_cached_plan, generate_stage_content
+from services.plan_generator import generate_plan_object, check_cached_plan
 from services.plan_generator import _short_guid
 from services.entitlement_service import check_entitlement, can_access_stage, grant_entitlement
 from core.db_helpers import get_plan_from_db
@@ -23,28 +23,29 @@ async def create_plan(request: PlanRequest, current_user: dict = Depends(get_cur
     
     try:
         # Generate plan with fingerprint caching
+        # Note: generate_plan_object automatically grants "pro" entitlement after generation
         plan_response = generate_plan_object(user_id, request.answers)
         
-        # Create initial "free" entitlement for the user
-        if user_id and user_id != "anon":
-            try:
-                grant_entitlement(user_id, plan_response.plan_id, "free")
-                logger.info(f"[AUDIT] Plan created | user_id={user_id} plan_id={plan_response.plan_id} context={{'tier':'free'}}")
-            except Exception as e:
-                logger.error(f"[AUDIT] Entitlement grant failed | user_id={user_id} plan_id={plan_response.plan_id} error={e}")
+        # Check actual entitlement tier (should be "pro" after auto-grant)
+        try:
+            tier = check_entitlement(user_id, plan_response.plan_id)
+            logger.info(f"[AUDIT] Plan created | user_id={user_id} plan_id={plan_response.plan_id} tier={tier}")
+        except Exception as e:
+            logger.warning(f"[AUDIT] Failed to check entitlement, defaulting to pro: {e}")
+            tier = "pro"  # Default to pro since we just generated all 3 stages
         
         # Build response with spec fields
-        tier = "free"  # Initially free
         persona = {"label": "Pattern-Seeker"}  # Default persona
         overview_md = plan_response.stages[0].content if plan_response.stages else ""  # Stage 1 content
         
         # Update stages with id and is_free
-        # SECURITY: Don't send full content for locked stages to free users
+        # Since we auto-grant "pro" tier, all stages should be unlocked
         updated_stages = []
         for i, stage in enumerate(plan_response.stages):
-            is_locked = stage.locked
+            # For pro tier, all stages are unlocked
+            is_locked = (tier != "pro" and i > 0)  # Only lock stages 2 & 3 if not pro
             
-            # Only send full content for unlocked stages (Stage 1 for free users)
+            # Send full content for unlocked stages
             stage_content = ""
             if not is_locked:
                 stage_content = stage.content
@@ -54,9 +55,9 @@ async def create_plan(request: PlanRequest, current_user: dict = Depends(get_cur
                 id=i + 1,  # Stage ID: 1, 2, or 3
                 title=stage.title,
                 is_free=(i == 0),  # True for Stage 1, False for others
-                content=stage_content,  # Empty for locked stages
+                content=stage_content,  # Empty for locked stages, full for unlocked
                 locked=is_locked,
-                teaser=stage.teaser  # Include teaser for locked stages
+                teaser=stage.teaser if is_locked else None  # Only include teaser for locked stages
             )
             updated_stages.append(updated_stage)
         
@@ -68,6 +69,10 @@ async def create_plan(request: PlanRequest, current_user: dict = Depends(get_cur
             stages=updated_stages
         )
     except Exception as e:
+        from ai_client import AIClientError
+        if isinstance(e, AIClientError):
+            logger.error(f"[AUDIT] Plan creation failed (AI error) | user_id={user_id} error={e}")
+            raise HTTPException(status_code=500, detail=f"Failed to generate plan: {str(e)}")
         logger.error(f"[AUDIT] Plan creation failed | user_id={user_id} error={e}")
         raise
 
@@ -106,8 +111,13 @@ async def generate_summary(request: SummaryRequest, current_user: dict = Depends
         # This is much faster than generating all 3 stages
         logger.info(f"[AUDIT] Generating Stage 1 only for summary | user_id={user_id}")
         try:
-            # Generate only Stage 1 content (much faster - ~8 seconds vs ~50 seconds for all 3)
-            stage1_content = generate_stage_content(request.answers, 0)  # Stage 1 is index 0
+            # Generate only Stage 1 content using the new AI client
+            from ai_client import call_openai_for_stage, AIClientError
+            stage1_content = call_openai_for_stage(
+                answers=request.answers,
+                stage_number=1,
+                stage_focus="introduction and self-diagnostic assessment"
+            )
             
             if not stage1_content or stage1_content.strip() == "":
                 logger.error(f"[AUDIT] Stage 1 content is empty after generation | user_id={user_id}")
@@ -153,6 +163,9 @@ async def generate_summary(request: SummaryRequest, current_user: dict = Depends
                 logger.warning(f"[AUDIT] Failed to save plan to database (non-critical): {db_error}")
                 # Continue anyway - plan_id is still valid
             
+        except AIClientError as ai_error:
+            logger.error(f"[AUDIT] Stage 1 generation failed (AI error) | user_id={user_id} error={ai_error}")
+            raise HTTPException(status_code=500, detail=f"Failed to generate summary: {str(ai_error)}")
         except HTTPException:
             raise
         except Exception as gen_error:
@@ -195,6 +208,10 @@ async def generate_summary(request: SummaryRequest, current_user: dict = Depends
         # Re-raise HTTP exceptions (they already have proper status codes)
         raise
     except Exception as e:
+        from ai_client import AIClientError
+        if isinstance(e, AIClientError):
+            logger.error(f"[AUDIT] Summary generation failed (AI error) | user_id={user_id} error={e}")
+            raise HTTPException(status_code=500, detail=f"Failed to generate summary: {str(e)}")
         logger.error(f"[AUDIT] Summary generation failed | user_id={user_id} error={e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate summary: {str(e)}")
 

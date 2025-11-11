@@ -56,11 +56,13 @@ export async function apiRequest(endpoint, method = "GET", body = null, timeoutM
   if (body) options.body = JSON.stringify(body);
 
   // Determine timeout based on endpoint
-  // Plan generation endpoints need longer timeout (120 seconds)
+  // Plan generation endpoints need longer timeout (150 seconds for all 3 stages)
   let timeout = timeoutMs;
   if (!timeout) {
     if (endpoint.includes('/plan/summary') || endpoint === '/plan' || endpoint.startsWith('/plan/')) {
-      timeout = 120000; // 120 seconds for plan generation
+      timeout = 150000; // 150 seconds for plan generation (3 stages × ~50 seconds)
+    } else if (endpoint.includes('/checkout/session')) {
+      timeout = 150000; // 150 seconds for checkout (may generate stages)
     } else {
       timeout = 30000; // 30 seconds for other requests
     }

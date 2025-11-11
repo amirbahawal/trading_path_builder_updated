@@ -37,45 +37,43 @@ def save_plan_to_db(plan_data: dict) -> str:
         plan_uuid = None
         
         if plan_id_value:
-            # Try to convert plan_id to UUID
-            clean_plan_id = plan_id_value
-            if isinstance(plan_id_value, str) and plan_id_value.startswith("plan-"):
-                clean_plan_id = plan_id_value[5:]  # Remove "plan-" prefix
-            
-            try:
-                plan_uuid = uuid.UUID(clean_plan_id)
-                # Check if plan already exists
-                existing_plan = db.query(Plan).filter(Plan.id == plan_uuid).first()
-                if existing_plan:
-                    # Plan exists - update it instead of creating new one
-                    existing_plan.answers_json = plan_data.get("answers_json", existing_plan.answers_json)
-                    existing_plan.answers_fingerprint = plan_data.get("answers_fingerprint", existing_plan.answers_fingerprint)
-                    existing_plan.template_version = plan_data.get("template_version", existing_plan.template_version)
-                    existing_plan.persona_label = plan_data.get("persona_label", existing_plan.persona_label)
-                    existing_plan.overview_md = plan_data.get("overview_md", existing_plan.overview_md)
-                    db.commit()
-                    db.refresh(existing_plan)
-                    plan = existing_plan
-                    plan_id = str(plan.id)
-                else:
-                    # Plan doesn't exist - create with specified UUID
-                    plan = Plan(
-                        id=plan_uuid,
-                        user_id=user_id_value,
-                        answers_json=plan_data.get("answers_json", {}),
-                        answers_fingerprint=plan_data.get("answers_fingerprint", ""),
-                        template_version=plan_data.get("template_version", ""),
-                        persona_label=plan_data.get("persona_label"),
-                        overview_md=plan_data.get("overview_md", ""),
-                        created_at=datetime.utcnow()
-                    )
-                    db.add(plan)
-                    db.commit()
-                    db.refresh(plan)
-                    plan_id = str(plan.id)
-            except ValueError:
-                # Invalid UUID format - generate new one
+            # Handle plan_id - convert to UUID if it's a string, or use as-is if already UUID
+            if isinstance(plan_id_value, uuid.UUID):
+                # Already a UUID object - use it directly
+                plan_uuid = plan_id_value
+            elif isinstance(plan_id_value, str):
+                # String - try to convert to UUID
+                clean_plan_id = plan_id_value
+                # Remove "plan-" prefix if present
+                if clean_plan_id.startswith("plan-"):
+                    clean_plan_id = clean_plan_id[5:]
+                
+                try:
+                    plan_uuid = uuid.UUID(clean_plan_id)
+                except ValueError:
+                    # Invalid UUID format in string - generate new one
+                    logger.warning(f"Invalid UUID format in plan_id: {plan_id_value}, generating new UUID")
+                    plan_uuid = uuid.uuid4()
+            else:
+                # Invalid type - generate new UUID
+                logger.warning(f"Invalid plan_id type: {type(plan_id_value)}, generating new UUID")
                 plan_uuid = uuid.uuid4()
+            
+            # Check if plan already exists
+            existing_plan = db.query(Plan).filter(Plan.id == plan_uuid).first()
+            if existing_plan:
+                # Plan exists - update it instead of creating new one
+                existing_plan.answers_json = plan_data.get("answers_json", existing_plan.answers_json)
+                existing_plan.answers_fingerprint = plan_data.get("answers_fingerprint", existing_plan.answers_fingerprint)
+                existing_plan.template_version = plan_data.get("template_version", existing_plan.template_version)
+                existing_plan.persona_label = plan_data.get("persona_label", existing_plan.persona_label)
+                existing_plan.overview_md = plan_data.get("overview_md", existing_plan.overview_md)
+                db.commit()
+                db.refresh(existing_plan)
+                plan = existing_plan
+                plan_id = str(plan.id)
+            else:
+                # Plan doesn't exist - create with specified UUID
                 plan = Plan(
                     id=plan_uuid,
                     user_id=user_id_value,
@@ -121,6 +119,10 @@ def save_plan_to_db(plan_data: dict) -> str:
             db.add(stage)
         
         db.commit()
+        # Return plan_id in consistent format (with "plan-" prefix)
+        # plan_id is already a string from str(plan.id), so add prefix if needed
+        if plan_id and not plan_id.startswith("plan-"):
+            return f"plan-{plan_id}"
         return plan_id
         
     except Exception as e:
